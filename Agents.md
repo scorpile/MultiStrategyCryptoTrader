@@ -1,218 +1,218 @@
-# Agents – Autonomous Crypto Trading Bot (Python)
+# Agents — Autonomous Crypto Trading Bot (Python)
 
-Este archivo define los agentes, perfiles, responsabilidades, flujos y límites para que Codex pueda construir y coordinar el proyecto completo.
+This document defines agents, roles, responsibilities, flows, and boundaries to help coordinate development of the full project.
 
-El objetivo general es crear un bot de trading **simulado** para el par SOL/USDT (u otros pares similares), escrito en **Python**, con:
-- Auto‑optimización diaria usando OpenAI.
-- Estrategias combinadas (indicadores técnicos + ML).
-- Persistencia completa del estado (SQLite u otra opción local).
-- Reportes diarios automáticos.
-- Un dashboard web para monitoreo.
-- Un único punto de entrada: `python run.py`.
+The overall goal is to build a **simulated** trading bot for **SOL/USDT** (and similar pairs) in **Python**, with:
+
+- Daily self-optimization using OpenAI
+- Combined strategies (technical indicators + ML)
+- Full state persistence (SQLite or another local option)
+- Automatic daily reports
+- A web dashboard for monitoring
+- A single entrypoint: `python run.py`
 
 ---
 
 ## 1. AGENT: Architect
 
-**Rol:** Diseñar la arquitectura completa del bot.
+**Role:** Design the overall bot architecture.
 
-**Responsabilidades:**
-- Definir la estructura de carpetas y módulos del proyecto.
-- Definir contratos entre capas (interfaces, DTOs básicos).
-- Definir la capa de persistencia (SQLite simple, con tablas para: estado, métricas, trades simulados, parámetros).
-- Definir los flujos principales:
-  - Ciclo continuo de trading simulado.
-  - Ciclo de evaluación diaria.
-  - Flujo de optimización automática con OpenAI.
-  - Flujo de recuperación tras apagado.
-- Documentar la arquitectura en archivos bajo `/diagrams` y `/plans`.
+**Responsibilities:**
+- Define the project folder structure and modules.
+- Define contracts between layers (interfaces, basic DTOs).
+- Define the persistence layer (simple SQLite with tables for: state, metrics, simulated trades, parameters).
+- Define the main flows:
+  - Continuous simulated trading cycle
+  - Daily evaluation cycle
+  - Automatic optimization flow with OpenAI
+  - Recovery flow after shutdown
+- Document the architecture under `/diagrams` and `/plans`.
 
-**Entregables:**
-- Estructura de carpetas bajo `/src`.
-- `diagrams/architecture.mmd` y `diagrams/data_flow.mmd`.
-- Descripción de módulos en `Project_Plan.md` y planes por fase.
+**Deliverables:**
+- Folder structure under `/src`
+- `diagrams/architecture.mmd` and `diagrams/data_flow.mmd`
+- Module descriptions in `Project_Plan.md` and phase plans
 
 ---
 
 ## 2. AGENT: Backend Developer (Python)
 
-**Rol:** Implementar la lógica interna del bot siguiendo la arquitectura definida.
+**Role:** Implement the internal bot logic following the defined architecture.
 
-**Responsabilidades:**
-- Crear módulos en `/src/core`, `/src/exchange`, `/src/strategy`, `/src/evaluation`, etc.
-- Implementar:
-  - Mecanismo de scheduling interno (loop principal + tareas diarias).
-  - Carga/lectura de configuración desde `config.yaml`.
-  - Registro de logs estructurados (por ejemplo, en JSON o texto).
-  - Módulo de paper trading (simulación de órdenes, PnL, fees).
-  - Persistencia de estado (invocando a `state_manager`).
+**Responsibilities:**
+- Create modules under `/src/core`, `/src/exchange`, `/src/strategy`, `/src/evaluation`, etc.
+- Implement:
+  - Internal scheduling (main loop + daily tasks)
+  - Config loading from `config.yaml`
+  - Structured logging (JSON or text)
+  - Paper trading module (simulated orders, PnL, fees)
+  - Persistent state integration (via `state_manager`)
 
-
-**Límites:**
-- No desarrollar lógica específica de trading hasta que lo indique el Project_Plan.
-- Los puntos de extensión se documentan claramente en docstrings y comentarios.
+**Limits:**
+- Do not develop strategy-specific trading logic until `Project_Plan` indicates it.
+- Extension points are documented clearly in docstrings and comments.
 
 ---
 
 ## 3. AGENT: Data Scientist / ML
 
-**Rol:** Diseñar y construir los componentes de Machine Learning y estadística.
+**Role:** Design and build ML/statistics components.
 
-**Responsabilidades:**
-- Definir y generar features a partir de datos OHLCV y volumen.
-- Implementar en `/src/ml`:
+**Responsibilities:**
+- Define and generate features from OHLCV and volume.
+- Implement in `/src/ml`:
   - `feature_engineering.py`
   - `trainer.py`
   - `model_manager.py`
   - `signal_generator.py`
-- Explorar modelos como:
-  - Modelos de clasificación (ej. RandomForest, XGBoost, regresión logística).
-  - Modelos de series de tiempo simples (ej. regresión, pequeñas redes recurrentes si procede).
-- Producir salidas del tipo:
-  - Probabilidad de que la siguiente ventana de tiempo sea alcista/bajista.
-  - Señales “buy / sell / hold” con un score de confianza.
-- Guardar y cargar modelos desde `/src/data/models`.
+- Explore models such as:
+  - Classification models (e.g., RandomForest, XGBoost, logistic regression)
+  - Simple time-series models (e.g., regression; small recurrent nets if warranted)
+- Produce outputs such as:
+  - Probability the next window is bullish/bearish
+  - “buy / sell / hold” signals with a confidence score
+- Save and load models from `/src/data/models`
 
-**Límites:**
-- No se requiere hiperoptimización ni arquitecturas profundas; el foco es un pipeline claro y extensible.
-- Los modelos deben poder re‑entrenarse de manera incremental o diaria, usando datos locales.
+**Limits:**
+- No heavy hyper-optimization; focus on a clear, extensible pipeline.
+- Models should support incremental/daily retraining using local data.
 
 ---
 
-## 4. AGENT: Evaluator / Self‑Optimizer
+## 4. AGENT: Evaluator / Self-Optimizer
 
-**Rol:** Evaluar el desempeño del bot y proponer/activar ajustes automáticos.
+**Role:** Evaluate bot performance and propose/apply automatic adjustments.
 
-**Responsabilidades:**
-- Analizar al final del día:
-  - PnL simulado.
-  - Drawdown.
-  - Win rate.
-  - Métricas de riesgo (Sharpe simple, etc.).
-- Calcular una métrica de **probabilidad de profit positivo consistente** a partir de:
-  - Métricas estadísticas.
-  - Señales ML.
-  - Estabilidad del sistema.
-- Empaquetar un log diario y, a través del módulo `/src/evaluation/openai_optimizer.py`, enviar un payload a la API de OpenAI (el usuario configurará la clave) con:
-  - Resumen del día.
-  - Estadísticas clave.
-  - Parámetros actuales.
-- Recibir de OpenAI recomendaciones de ajuste (por ejemplo: modificar un umbral de RSI, cambiar ventana de entrenamiento, ajustar tamaño de posición) y aplicarlas de forma controlada en el estado persistente.
+**Responsibilities:**
+- Analyze at end of day:
+  - Simulated PnL
+  - Drawdown
+  - Win rate
+  - Risk metrics (simple Sharpe, etc.)
+- Compute a **probability of consistent positive profit** using:
+  - Statistical metrics
+  - ML signals
+  - System stability
+- Build a daily log and (via `/src/evaluation/openai_optimizer.py`) send a payload to the OpenAI API (user supplies the key) including:
+  - Daily summary
+  - Key stats
+  - Current parameters
+- Receive OpenAI recommendations (e.g., adjust an RSI threshold, change training window, adjust position size) and apply changes in a controlled way to persistent state.
 
-**Meta especial:**
-- Cuando el Evaluator calcule que hay **≥ 30% de probabilidad** de obtener profit positivo de manera consistente (según reglas configurables), debe:
-  - Registrar esa condición en la base de datos.
-  - Exponer una bandera que el frontend pueda mostrar (ej: “Condición de probabilidad alcanzada, revisar para fondos reales”).
+**Special goal:**
+- When the Evaluator estimates **≥ 30% probability** of consistent positive profit (per configurable rules), it must:
+  - Record that condition in the database
+  - Expose a flag the frontend can display (e.g., “Probability condition reached, review for real funds”)
 
 ---
 
 ## 5. AGENT: Report Manager
 
-**Rol:** Generar reportes diarios y almacenarlos de forma ordenada.
+**Role:** Generate daily reports and store them in an organized manner.
 
-**Responsabilidades:**
-- Construir en `/src/reports`:
+**Responsibilities:**
+- Build in `/src/reports`:
   - `reporter.py`
-  - Plantillas HTML/Markdown bajo `/src/reports/templates`.
-- Generar cada día:
-  - Un archivo Markdown con resumen del día.
-  - Un archivo HTML (para el dashboard).
-  - Un archivo JSON con datos de reporte estructurado (para otras integraciones).
-- Guardar reportes en carpetas tipo `/reports/YYYY-MM-DD/`.
+  - HTML/Markdown templates under `/src/reports/templates`
+- Generate each day:
+  - A Markdown daily summary
+  - An HTML report (for the dashboard)
+  - A JSON structured report (for integrations)
+- Store reports under `/reports/YYYY-MM-DD/`.
 
-**Contenido mínimo del reporte:**
-- Métricas básicas: PnL, número de trades, win rate, drawdown.
-- Comentarios o notas generadas por el Evaluator/ML.
-- Parámetros relevantes usados durante el día (ej. thresholds, tamaño de posición, etc.).
-- Estado de la bandera de probabilidad ≥ 30%.
+**Minimum report contents:**
+- Core metrics: PnL, number of trades, win rate, drawdown
+- Comments/notes generated by the Evaluator/ML
+- Relevant parameters used that day (thresholds, position size, etc.)
+- Status of the ≥ 30% probability flag
 
 ---
 
 ## 6. AGENT: Frontend/UI Developer
 
-**Rol:** Crear una interfaz web ligera para visualizar el estado del bot.
+**Role:** Create a lightweight web UI to visualize bot state.
 
-**Responsabilidades:**
-- Implementar un pequeño servidor web en `/src/frontend/server.py`, idealmente con:
-  - FastAPI (o alternativa ligera).
-  - Plantillas (Jinja2 / HTMX) bajo `/src/frontend/templates`.
-  - Archivos estáticos bajo `/src/frontend/static`.
-- El dashboard debe mostrar:
-  - Estado de ejecución del bot.
-  - PnL del día actual y de días recientes.
-  - Últimas señales generadas.
-  - Parámetros actuales relevantes (ej. tamaño de posición, thresholds).
-  - Indicador del estado de “probabilidad ≥ 30%”.
-- Incluir un mecanismo de actualización periódica (polling simple o HTMX).
+**Responsibilities:**
+- Implement a small web server in `/src/frontend/server.py`, ideally with:
+  - FastAPI (or another lightweight alternative)
+  - Templates (Jinja2 / HTMX) under `/src/frontend/templates`
+  - Static files under `/src/frontend/static`
+- The dashboard should display:
+  - Bot runtime status
+  - Today’s PnL and recent days
+  - Latest generated signals
+  - Current relevant parameters (position size, thresholds, etc.)
+  - Indicator for “probability ≥ 30%” status
+- Include a simple periodic refresh mechanism (polling or HTMX).
 
-**Límites:**
-- El frontend **no debe** iniciar/parar el bot directamente; solo es una capa de observación.
-- No se requiere autenticar usuarios en esta primera versión (aunque se debe dejar el hook preparado).
+**Limits:**
+- The frontend must **not** start/stop the bot directly; it is an observation layer only.
+- No user authentication required for the first version (but leave hooks for it).
 
 ---
 
 ## 7. AGENT: Integrator / DevOps
 
-**Rol:** Asegurar que todo funcione de forma integrada y sea fácil de ejecutar.
+**Role:** Ensure everything works end-to-end and is easy to run.
 
-**Responsabilidades:**
-- Crear y mantener:
-  - `run.py` como punto de entrada principal.
-  - `requirements.txt` con dependencias del proyecto.
-- Asegurarse de que el proyecto pueda arrancar con:
+**Responsibilities:**
+- Create and maintain:
+  - `run.py` as the main entrypoint
+  - `requirements.txt` with project dependencies
+- Ensure the project starts with:
   ```bash
   python run.py
   ```
-- Configurar un mecanismo interno de scheduling:
-  - Ciclo continuo (por ejemplo, cada X segundos para revisar condiciones de mercado).
-  - Tarea diaria para evaluar y optimizar.
-- (Opcional) Proveer un `Dockerfile` y/o instrucciones de despliegue en `README.md`.
+- Configure internal scheduling:
+  - Continuous cycle (e.g., every X seconds to evaluate market conditions)
+  - Daily task for evaluation and optimization
+- (Optional) Provide a `Dockerfile` and/or deployment instructions in `README.md`
 
 ---
 
-## Flujos Principales del Sistema
+## Main System Flows
 
-### Flujo A – Ciclo continuo de trading simulado
+### Flow A — Continuous simulated trading cycle
 
-1. Cargar configuración y estado persistente.
-2. Descargar u obtener datos de mercado recientes (OHLCV).
-3. Generar señales técnicas + ML.
-4. Decidir operaciones simuladas (paper trading).
-5. Actualizar estado (posiciones simuladas, PnL, métricas).
-6. Registrar logs de cada decisión y trade simulado.
+1. Load configuration and persistent state.
+2. Fetch recent market data (OHLCV).
+3. Generate technical + ML signals.
+4. Decide simulated operations (paper trading).
+5. Update state (simulated positions, PnL, metrics).
+6. Log each decision and simulated trade.
 
-### Flujo B – Evaluación y optimización diaria
+### Flow B — Daily evaluation and optimization
 
-1. Al final del día (según zona horaria configurable), construir un resumen:
-   - PnL del día.
-   - Número de trades y win rate.
-   - Evolución de PnL.
-   - Métricas de riesgo (Sharpe, max drawdown simple).
-2. Calcular una “probabilidad de profit positivo consistente” usando reglas y/o modelos ML.
-3. Enviar a OpenAI un payload con:
-   - Resumen del día.
-   - Parámetros actuales.
-   - Restricciones (por ejemplo: no aumentar riesgo más de X).
-4. Recibir respuesta de OpenAI con recomendaciones y aplicar ajustes (dentro de límites seguros).
-5. Guardar todo en la base de datos y en reportes.
+1. At end of day (timezone configurable), build a summary:
+   - Daily PnL
+   - Number of trades and win rate
+   - PnL evolution
+   - Risk metrics (Sharpe, simple max drawdown)
+2. Compute a “probability of consistent positive profit” using rules and/or ML.
+3. Send an OpenAI payload with:
+   - Daily summary
+   - Current parameters
+   - Constraints (e.g., do not increase risk above X)
+4. Receive OpenAI recommendations and apply them (within safe limits).
+5. Persist everything to the database and reports.
 
-### Flujo C – Recuperación tras apagado
+### Flow C — Recovery after shutdown
 
-1. Al iniciar, leer desde SQLite:
-   - Parámetros vigentes.
-   - Estado de posiciones simuladas.
-   - Modelos ML entrenados o su metadata.
-   - Última probabilidad estimada.
-2. Reanudar ejecución continua sin perder coherencia.
-3. Registrar cualquier inconsistencia y proceder de forma segura.
+1. On startup, read from SQLite:
+   - Current parameters
+   - Simulated position state
+   - Trained ML models or their metadata
+   - Last estimated probability
+2. Resume continuous execution without losing coherence.
+3. Log any inconsistencies and proceed safely.
 
 ---
 
-## Reglas de Oro
+## Golden Rules
 
-- El diseño debe ser modular y extensible: nuevas estrategias, nuevos pares, nuevos modelos ML.
-- `run.py` debe ser el único punto obligatorio de entrada para el usuario final.
-- Todo ajuste automático debe:
-  - Estar trazado (quién lo sugirió, cuándo, por qué).
-  - Persistirse antes de entrar en producción (en el siguiente ciclo).
-- El sistema debe preferir la **robustez** sobre la complejidad: primero claridad, luego sofisticación.
+- The design must be modular and extensible: new strategies, new pairs, new ML models.
+- `run.py` must be the only mandatory entrypoint for end users.
+- Every automatic adjustment must:
+  - Be traceable (who suggested it, when, and why).
+  - Be persisted before it becomes effective (in the next cycle).
+- Prefer **robustness** over complexity: clarity first, sophistication later.

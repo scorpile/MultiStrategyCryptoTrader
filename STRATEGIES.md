@@ -1,65 +1,65 @@
-# STRATEGIES — Cómo añadir una estrategia nueva
+# STRATEGIES — How to Add a New Strategy
 
-Las estrategias son **plugins internos** (hot‑swappable) que **solo generan señales**. La ejecución (paper/live), riesgo, SL/TP, throttles, gate y persistencia viven fuera de la estrategia (scheduler + engines + SQLite).
+Strategies are **internal plugins** (hot-swappable) that **only generate signals**. Execution (paper/live), risk, SL/TP, throttles, gates, and persistence live outside the strategy (scheduler + engines + SQLite).
 
-Carpeta: `src/strategy/`
+Folder: `src/strategy/`
 
-Registro: `src/strategy/registry.py`
+Registry: `src/strategy/registry.py`
 
 ---
 
-## 1) Contrato de una estrategia
+## 1) Strategy contract
 
-Toda estrategia implementa `BaseStrategy` (`src/strategy/strategy_base.py`) y debe:
+Every strategy implements `BaseStrategy` (`src/strategy/strategy_base.py`) and must provide:
 
-- `name() -> str` (ID único)
-- `config_schema() -> dict` (defaults para UI)
+- `name() -> str` (unique ID)
+- `config_schema() -> dict` (defaults used by the UI)
 - `generate_signal(indicators, context=None) -> dict`
 
-La salida debe ser un dict con estas claves (usa `self._build_signal(...)` para asegurar formato):
+The output must be a `dict` with these keys (use `self._build_signal(...)` to ensure a consistent format):
 
 - `decision`: `"buy" | "sell" | "hold"`
-- `price`: `float` (precio “de intención” de la señal; el engine aplica slippage/spread)
+- `price`: `float` (signal “intent” price; the engine applies slippage/spread)
 - `confidence`: `0..1`
-- `suggested_size`: cantidad (base asset) **opcional**. Si pones `0`, el scheduler hará **risk sizing**.
-- `reasons`: lista de strings (debuggable)
-- `metadata`: dict serializable (se persistirá en DB en muchos casos)
+- `suggested_size`: base-asset quantity (**optional**). If you return `0`, the scheduler will do **risk sizing**.
+- `reasons`: list of strings (debug-friendly)
+- `metadata`: JSON-serializable dict (often persisted in DB)
 
-> El bot es **spot long‑only** por defecto: si no hay posición, un `sell` se ignora.
+> The bot is **spot long-only** by default: if there is no position, a `sell` is ignored.
 
 ---
 
-## 2) Inputs disponibles: `indicators`
+## 2) Available inputs: `indicators`
 
-El scheduler construye un payload en `src/core/scheduler.py:_build_indicator_payload()` con campos típicos:
+The scheduler builds an indicator payload in `src/core/scheduler.py:_build_indicator_payload()` with common fields like:
 
-- `ohlcv`: lista de velas dict (`open_time`, `open`, `high`, `low`, `close`, `volume`, …)
-- `closes`, `highs`, `lows`, `volumes`: listas alineadas
-- `rsi`: lista (periodo depende de la estrategia activa)
-- `macd`: dict con listas (`macd`, `signal`, `histogram`)
-- `bollinger`: dict con listas (`lower`, `middle`, `upper`)
-- `atr`: lista (periodo depende de la estrategia activa)
-- `ema_fast`, `ema_slow`: listas (periodos dependen de la estrategia activa)
-- `volume_sma`: lista (periodo depende de la estrategia activa)
+- `ohlcv`: list of candle dicts (`open_time`, `open`, `high`, `low`, `close`, `volume`, ...)
+- `closes`, `highs`, `lows`, `volumes`: aligned lists
+- `rsi`: list (period depends on the active strategy)
+- `macd`: dict with lists (`macd`, `signal`, `histogram`)
+- `bollinger`: dict with lists (`lower`, `middle`, `upper`)
+- `atr`: list (period depends on the active strategy)
+- `ema_fast`, `ema_slow`: lists (period depends on the active strategy)
+- `volume_sma`: list (period depends on the active strategy)
 - Extras: `doji`, `engulfing`, `macd_histogram`, `bollinger_width`, `vwap`, `features_df`
 
-Regla práctica:
-- Asume que `closes` existe y es la fuente principal para precio.
-- Si vas a recalcular indicadores, hazlo solo como fallback (cuando el payload no trae la serie esperada).
+Rule of thumb:
+- Assume `closes` exists and use it as your primary price source.
+- If you recompute indicators, do it only as a fallback (when the payload doesn’t include the series you need).
 
 ---
 
-## 3) Inputs disponibles: `context`
+## 3) Available inputs: `context`
 
-`StrategyManager` llama a `generate_signal(..., context=...)` y agrega:
+`StrategyManager` calls `generate_signal(..., context=...)` and may include:
 
-- `capital`: equity/cash aproximado para sizing (puede ser `None`)
-- `position_qty`: qty actual de la posición (si el scheduler lo pasa como extra_context)
-- `ml`: contexto ML (probabilidades/confianza/model_name)
-- `rl`: contexto RL (policy/score; si está habilitado)
-- `exploration`: flag para modo “aventurero” (cuando aplica)
+- `capital`: approximate equity/cash for sizing (may be `None`)
+- `position_qty`: current position size (if the scheduler passes it via `extra_context`)
+- `ml`: ML context (probabilities/confidence/model_name)
+- `rl`: RL context (policy/score; if enabled)
+- `exploration`: flag for “adventurous” mode (when enabled)
 
-Ejemplo de lectura:
+Example:
 
 ```python
 ctx = context or {}
@@ -70,42 +70,42 @@ prob_up = float(ml.get("probability_up", 0.5) or 0.5)
 
 ---
 
-## 4) SL/TP y Risk Sizing (recomendado)
+## 4) SL/TP and risk sizing (recommended)
 
-Hay dos caminos válidos:
+There are two valid paths:
 
-### A) Dejar que el scheduler calcule SL/TP
+### A) Let the scheduler compute SL/TP
 
-En tu `config_schema()` define:
+In your `config_schema()` define:
 
 - `stop_atr_multiplier`
 - `profit_target_multiplier`
-- `risk_pct_per_trade` (opcional)
+- `risk_pct_per_trade` (optional)
 
-Y devuelve señales de BUY con `suggested_size=0.0`.
+Return BUY signals with `suggested_size=0.0`.
 
-El scheduler:
-- calcula `stop_loss` y `take_profit` (ATR‑based),
-- hace sizing por riesgo usando `RiskManager.size_position_for_risk(...)`,
-- adjunta todo a `SimulatedOrder.metadata` (queda persistido en DB).
+The scheduler:
+- computes `stop_loss` and `take_profit` (ATR-based),
+- sizes the position by risk via `RiskManager.size_position_for_risk(...)`,
+- attaches everything to `SimulatedOrder.metadata` (persisted in DB).
 
-### B) Emitir SL/TP absolutos desde la estrategia
+### B) Emit absolute SL/TP from the strategy
 
-En el `metadata` del BUY agrega:
+In the BUY `metadata` include:
 
-- `stop_loss`: precio stop absoluto
-- `take_profit`: precio TP absoluto
-- (opcional) `risk_pct_per_trade`
+- `stop_loss`: absolute stop price
+- `take_profit`: absolute take-profit price
+- (optional) `risk_pct_per_trade`
 
-Esto es útil si tu estrategia tiene reglas explícitas (ej: Bollinger range “TP en middle band”).
+This is useful when the strategy has explicit rules (e.g., Bollinger range: TP at middle band).
 
 ---
 
-## 5) Pasos para añadir una estrategia
+## 5) Steps to add a strategy
 
-### Paso 1 — Crear el archivo
+### Step 1 — Create the file
 
-Crea un archivo nuevo, por ejemplo `src/strategy/my_strategy.py`:
+Create a new file, for example `src/strategy/my_strategy.py`:
 
 ```python
 from __future__ import annotations
@@ -116,7 +116,7 @@ from .strategy_base import BaseStrategy
 
 
 class MyStrategy(BaseStrategy):
-    description = "Mi estrategia: describe la idea en 1 línea."
+    description = "My strategy: describe the idea in 1 line."
 
     def name(self) -> str:
         return "my_strategy"
@@ -138,31 +138,27 @@ class MyStrategy(BaseStrategy):
         ctx = context or {}
         position_qty = float(ctx.get("position_qty", 0.0) or 0.0)
 
-        # TODO: tu lógica aquí
+        # TODO: your logic here
         if position_qty <= 0:
             return self._build_signal(
                 decision="buy",
                 price=price,
                 confidence=0.55,
-                suggested_size=0.0,  # <- deja que el scheduler haga risk sizing
+                suggested_size=0.0,  # <- let the scheduler do risk sizing
                 reasons=["Example buy"],
                 metadata={"risk_pct_per_trade": float(self.config.get("risk_pct_per_trade", 0.005))},
             )
         return self._build_signal(decision="hold", price=price, confidence=0.2, suggested_size=0.0, reasons=["No signal"])
 ```
 
-Buenas prácticas:
-- Mantén `generate_signal()` determinista y rápida.
-- No hagas I/O (red, disco) desde la estrategia.
-- No ejecutes órdenes reales (la estrategia solo decide).
+Best practices:
+- Keep `generate_signal()` deterministic and fast.
+- Do not do I/O (network, disk) inside the strategy.
+- The strategy decides; it should not execute orders directly.
 
-### Paso 2 — Registrar la estrategia
+### Step 2 — Register the strategy
 
-Agrega tu clase al registry:
-
-- `src/strategy/registry.py`
-
-Ejemplo:
+Add your class to the registry in `src/strategy/registry.py`:
 
 ```python
 from .my_strategy import MyStrategy
@@ -170,9 +166,9 @@ from .my_strategy import MyStrategy
 STRATEGY_REGISTRY["my_strategy"] = MyStrategy
 ```
 
-### Paso 3 — Configurar defaults/overrides
+### Step 3 — Configure defaults/overrides
 
-En `src/config/config.yaml`:
+In `src/config/config.yaml`:
 
 ```yaml
 strategy:
@@ -184,36 +180,35 @@ strategy:
       risk_pct_per_trade: 0.005
 ```
 
-> La UI muestra la config_schema + overrides y permite switching en caliente.
+> The UI shows `config_schema` + overrides and supports hot switching.
 
-### Paso 4 — (Opcional) Hacerla “tuneable” en el backtest diario
+### Step 4 — (Optional) Make it tuneable in the daily backtest
 
-Si quieres que el optimizador daily explore parámetros, agrega una grilla en:
+If you want the daily optimizer to explore parameters, add a grid in:
 
 - `src/backtesting/walkforward_runner.py:_default_grid()`
 
-Esto habilita el grid/walk-forward para tu estrategia con límites (`backtesting.auto.grid_cap`).
+This enables grid + walk-forward for your strategy, within caps (`backtesting.auto.grid_cap`).
 
 ---
 
-## 6) Debugging / Validación rápida
+## 6) Debugging / quick validation
 
-- **Dashboard → Activity / Trades**: confirma que genera señales y que se ejecutan.
-- **Bloqueos**: revisa `decision_events` (gate, cooldown, risk_pause, manual_pause, etc.).
-- Backtest rápido:
+- **Dashboard → Activity / Trades**: confirm it generates signals and that they execute.
+- **Blocks**: inspect `decision_events` (gate, cooldown, risk_pause, manual_pause, etc.).
+- Quick backtest:
   - `GET /api/backtest/run?strategy=my_strategy&interval=1m&days=30`
 
-Si ves “Backtest: n/a” en el dashboard, normalmente significa:
-- aún no corrió el backtest diario, o
-- falló y guardó `backtest_last.error` en `system_parameters`.
+If you see “Backtest: n/a” in the dashboard, it usually means:
+- the daily backtest has not run yet, or
+- it failed and stored `backtest_last.error` under `system_parameters`.
 
 ---
 
-## 7) Checklist antes de darla por “lista”
+## 7) Checklist before calling it “done”
 
-- Devuelve siempre `price` válido cuando sea BUY/SELL.
-- No crashea cuando faltan series (maneja listas vacías).
-- Es consistente con spot long‑only (SELL solo cuando hay posición).
-- Define claramente cómo se calcula SL/TP (A o B).
-- Produce `reasons` útiles (te ahorra horas).
-
+- Always return a valid `price` for BUY/SELL.
+- Never crash when series are missing (handle empty lists).
+- Respect spot long-only (SELL only when there is a position).
+- Be explicit about how SL/TP is computed (A or B).
+- Produce useful `reasons` (saves hours).

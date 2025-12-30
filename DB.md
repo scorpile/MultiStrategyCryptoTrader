@@ -1,56 +1,59 @@
-# DB / Persistencia (SQLite)
+# Database / Persistence (SQLite)
 
-Este proyecto usa **dos SQLite** locales:
+This project uses **two local SQLite** databases:
 
-1) `data/state.db` — *estado operativo y trazabilidad* (trades, métricas, eventos, parámetros, live ledger).
-2) `data/market_data.sqlite` — *cache OHLCV* para entrenamiento/backtesting de largo horizonte (evita límites de API).
+1) `data/state.db` — *operational state and traceability* (trades, metrics, events, parameters, execution ledger).
+2) `data/market_data.sqlite` — *OHLCV cache* for longer-horizon training/backtesting (avoids API limits).
 
-Ambas bases son locales y el bot puede reiniciar y **rehidratar** estado desde ellas.
+Both databases are local, and the bot can restart and **rehydrate** its state from them.
 
 ---
 
 ## `data/state.db` (StateManager)
 
-Creada/gestionada por `src/core/state_manager.py`.
+Created/managed by `src/core/state_manager.py`.
 
-Notas:
-- `metadata` suele ser **JSON string** (serializado con `json.dumps`).
-- `system_parameters.value` siempre es **JSON string**.
-- Los timestamps se guardan en ISO‑8601 con sufijo `Z` (UTC).
-- La conexión usa `PRAGMA journal_mode = WAL;` para mejorar concurrencia.
+Notes:
+- `metadata` fields are usually stored as **JSON strings** (serialized with `json.dumps`).
+- `system_parameters.value` is always a **JSON string**.
+- Timestamps are stored as ISO-8601 strings with a `Z` suffix (UTC).
+- The connection uses `PRAGMA journal_mode = WAL;` to improve concurrency.
 
-### Tabla: `system_parameters`
-Key/Value store persistente para flags, snapshots y estado interno.
+### Table: `system_parameters`
 
-| Columna | Tipo | Descripción |
+Persistent key/value store for flags, snapshots, and internal state.
+
+| Column | Type | Description |
 |---|---|---|
-| `key` | TEXT (PK) | Nombre del parámetro |
-| `value` | TEXT | JSON serializado |
+| `key` | TEXT (PK) | Parameter name |
+| `value` | TEXT | Serialized JSON |
 | `updated_at` | TEXT | ISO UTC |
 
-Ejemplos de keys comunes:
+Common keys:
 - `execution_mode`, `risk_pause`, `manual_pause`, `backtest_last`, `ml_status`, `market_data_last_sync`, etc.
 
-### Tabla: `simulated_trades`
-Ledger de operaciones **paper** (BUY/SELL simulados) con fees y metadata (stop/take/sizing/execution model).
+### Table: `simulated_trades`
 
-| Columna | Tipo | Descripción |
+**Paper** trade ledger (simulated BUY/SELL) with fees and metadata (stop/take/sizing/execution model).
+
+| Column | Type | Description |
 |---|---|---|
-| `id` | INTEGER (PK) | Autoincrement |
+| `id` | INTEGER (PK) | Auto-increment |
 | `trade_time` | TEXT | ISO UTC |
-| `symbol` | TEXT | Ej: `SOLUSDT` |
+| `symbol` | TEXT | e.g. `SOLUSDT` |
 | `side` | TEXT | `BUY` / `SELL` |
-| `quantity` | REAL | Qty en base asset |
-| `price` | REAL | Precio ejecutado (con slippage/spread simulado) |
-| `fee` | REAL | Fee simulado |
-| `pnl` | REAL | PnL por trade (neto en SELL en versiones recientes) |
+| `quantity` | REAL | Base-asset quantity |
+| `price` | REAL | Filled price (with simulated slippage/spread) |
+| `fee` | REAL | Simulated fee |
+| `pnl` | REAL | Per-trade PnL (net on SELL in recent versions) |
 | `metadata` | TEXT | JSON string (stop_loss, take_profit, sizing, etc.) |
 | `created_at` | TEXT | ISO UTC |
 
-### Tabla: `daily_metrics`
-Métricas agregadas por día (usado por dashboard/reportes).
+### Table: `daily_metrics`
 
-| Columna | Tipo |
+Daily aggregated metrics (used by the dashboard and reports).
+
+| Column | Type |
 |---|---|
 | `id` | INTEGER (PK) |
 | `metric_date` | TEXT (UNIQUE) |
@@ -66,12 +69,13 @@ Métricas agregadas por día (usado por dashboard/reportes).
 | `avg_win` | REAL |
 | `avg_loss` | REAL |
 
-> Algunas columnas se agregan vía `ALTER TABLE ... ADD COLUMN ...` (migraciones best‑effort).
+> Some columns are added via `ALTER TABLE ... ADD COLUMN ...` (best-effort migrations).
 
-### Tabla: `probability_flags`
-Flags “de sistema” (ej: bandera de “profit consistency”).
+### Table: `probability_flags`
 
-| Columna | Tipo |
+System flags (e.g., “profit consistency” / readiness flags).
+
+| Column | Type |
 |---|---|
 | `flag_name` | TEXT (PK) |
 | `is_enabled` | INTEGER |
@@ -79,10 +83,11 @@ Flags “de sistema” (ej: bandera de “profit consistency”).
 | `updated_at` | TEXT |
 | `metadata` | TEXT (JSON string) |
 
-### Tabla: `decision_events`
-Audit log de decisiones de estrategia: ejecutadas o bloqueadas (gate, cooldown, risk pause, etc.).
+### Table: `decision_events`
 
-| Columna | Tipo |
+Audit log of strategy decisions: executed or blocked (gate, cooldown, risk pause, etc.).
+
+| Column | Type |
 |---|---|
 | `id` | INTEGER (PK) |
 | `event_time` | TEXT |
@@ -98,10 +103,11 @@ Audit log de decisiones de estrategia: ejecutadas o bloqueadas (gate, cooldown, 
 | `metadata` | TEXT (JSON string) |
 | `created_at` | TEXT |
 
-### Tabla: `equity_snapshots`
-Serie de equity para gráficos/diagnóstico.
+### Table: `equity_snapshots`
 
-| Columna | Tipo |
+Equity time series for charts/diagnostics.
+
+| Column | Type |
 |---|---|
 | `id` | INTEGER (PK) |
 | `snapshot_time` | TEXT |
@@ -113,10 +119,11 @@ Serie de equity para gráficos/diagnóstico.
 | `metadata` | TEXT (JSON string) |
 | `created_at` | TEXT |
 
-### Tabla: `execution_trades`
-Ledger de operaciones **live** (Binance Spot) y/o “paper comparable” cuando se habilita.
+### Table: `execution_trades`
 
-| Columna | Tipo |
+Execution ledger for **live** (Binance Spot) and/or “paper comparable” execution when enabled.
+
+| Column | Type |
 |---|---|
 | `id` | INTEGER (PK) |
 | `trade_time` | TEXT |
@@ -132,12 +139,13 @@ Ledger de operaciones **live** (Binance Spot) y/o “paper comparable” cuando 
 | `metadata` | TEXT (JSON string) |
 | `created_at` | TEXT |
 
-### Tabla: `execution_positions`
-Estado de posición “live” (y compatibilidad para persistir posiciones calculadas por ejecución).
+### Table: `execution_positions`
 
-PK compuesta: (`symbol`, `mode`)
+“Live” position state (and a compatibility layer to persist execution-computed positions).
 
-| Columna | Tipo |
+Composite PK: (`symbol`, `mode`)
+
+| Column | Type |
 |---|---|
 | `symbol` | TEXT |
 | `mode` | TEXT |
@@ -153,13 +161,13 @@ PK compuesta: (`symbol`, `mode`)
 
 ## `data/market_data.sqlite` (MarketDataStore)
 
-Creada/gestionada por `src/data/market_data_store.py`.
+Created/managed by `src/data/market_data_store.py`.
 
-Tabla principal: `ohlcv_candles`
+Main table: `ohlcv_candles`
 
-PK compuesta: (`symbol`, `interval`, `open_time_ms`)
+Composite PK: (`symbol`, `interval`, `open_time_ms`)
 
-| Columna | Tipo |
+| Column | Type |
 |---|---|
 | `symbol` | TEXT |
 | `interval` | TEXT |
@@ -175,24 +183,24 @@ PK compuesta: (`symbol`, `interval`, `open_time_ms`)
 | `quote_asset_volume` | REAL |
 | `number_of_trades` | INTEGER |
 
-Cómo se llena:
-- El bot sincroniza rangos vía `ensure_range(...)` y usa paginación por `startTime`.
-- Si el cache no está habilitado, se cae a `fetch_ohlcv(limit=N)` (limitado por API).
+How it’s populated:
+- The bot synchronizes ranges via `ensure_range(...)` and paginates using `startTime`.
+- If the cache is not enabled, it falls back to `fetch_ohlcv(limit=N)` (API-limited).
 
 ---
 
-## Reset (wipe) y trazabilidad
+## Reset (wipe) & traceability
 
-El reset borra datos pero mantiene el schema (útil para “volver a cero” sin perder compatibilidad):
+Reset wipes data but keeps the schema (useful to “start over” without breaking compatibility):
 
 - DB wipe: `StateManager.reset_db()`
-- API: `POST /api/admin/reset` con body `{"confirm":"RESET"}`
+- API: `POST /api/admin/reset` with body `{"confirm":"RESET"}`
 
 ---
 
-## Inspección rápida (SQLite)
+## Quick inspection (SQLite)
 
-Si tienes `sqlite3` instalado:
+If you have `sqlite3` installed:
 
 ```bash
 sqlite3 data/state.db ".tables"
@@ -200,9 +208,8 @@ sqlite3 data/state.db "select * from simulated_trades order by trade_time desc l
 sqlite3 data/state.db "select metric_date,pnl,sharpe,profit_factor from daily_metrics order by metric_date desc limit 10;"
 ```
 
-Para el cache OHLCV:
+For the OHLCV cache:
 
 ```bash
 sqlite3 data/market_data.sqlite "select count(*) from ohlcv_candles where symbol='SOLUSDT' and interval='1m';"
 ```
-

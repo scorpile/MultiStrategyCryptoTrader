@@ -1,0 +1,65 @@
+flowchart TD
+    subgraph User
+        U1[Ejecuta python run.py]
+        U2[Abre Dashboard Web]
+    end
+
+    subgraph Core[/src/core]
+        CFG[Config Loader]
+        STM[State Manager]
+        SCH[Scheduler]
+    end
+
+    subgraph Exchange[/src/exchange]
+        EXC[Binance Client]
+        PAP[Paper Trading]
+    end
+
+    subgraph Strategy[/src/strategy]
+        TEC[Technicals]
+        ENT[Entry/Exit]
+        RSK[Risk Manager]
+    end
+
+    subgraph ML[/src/ml]
+        FE[Feature Engineering]
+        TRN[Trainer]
+        MM[Model Manager]
+        SIG[Signal Generator]
+    end
+
+    subgraph Eval[/src/evaluation]
+        EVAL[Evaluator]
+        OPT[OpenAI Optimizer]
+    end
+
+    subgraph Reports[/src/reports]
+        REP[Reporter]
+    end
+
+    subgraph Frontend[/src/frontend]
+        SRV[Web Server]
+    end
+
+    U1 --> CFG
+    CFG --> STM
+    CFG --> SCH
+
+    SCH --> EXC
+    SCH --> TEC
+    SCH --> FE
+    SCH --> PAP
+
+    TEC --> ENT
+    FE --> TRN --> MM --> SIG
+    SIG --> ENT
+    ENT --> RSK --> PAP
+    PAP --> STM
+
+    SCH --> EVAL --> OPT --> STM
+    SCH --> REP
+    REP --> SRV
+
+    U2 --> SRV
+    SRV --> STM
+    SRV --> REP

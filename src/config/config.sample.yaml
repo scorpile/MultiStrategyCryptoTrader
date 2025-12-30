@@ -1,0 +1,238 @@
+# Sample configuration for the Autonomous Crypto Trading Bot (Simulation)
+#
+# Safe-to-commit template:
+# - Copy this file to `src/config/config.yaml`
+# - Fill secrets locally (DO NOT commit real API keys)
+#
+
+general:
+  base_symbol: "SOLUSDT"
+  time_frame: "1m"
+  quote_currency: "USDT"
+  simulation: true
+  timezone: "America/Panama"
+
+exchange:
+  provider: "binance"
+  api_key: ""        # Optional for OHLCV reads; required for LIVE execution
+  api_secret: ""     # Optional for OHLCV reads; required for LIVE execution
+  use_sandbox: true
+
+# Local OHLCV cache for long-horizon training/backtesting (avoids API limit=1000/1500).
+historical_data:
+  enabled: true
+  db_path: "data/market_data.sqlite"
+  cache_recent: true
+  request_limit: 1000
+  request_sleep_seconds: 0.12
+  max_requests_per_sync: 20000
+
+# Execution routing:
+# - paper: uses local paper trading ledger (default)
+# - live: uses Binance Spot signed endpoints (requires env arming + UI confirmation)
+execution:
+  mode: "paper" # paper|live
+  live:
+    allow_symbol: "SOLUSDT"
+    require_env_var: "BINANCE_LIVE_ARMED"
+    require_env_value: "1"
+    require_min_readiness_score: 80
+    max_notional_usdt_per_trade: 10
+    max_daily_loss_usdt: 10
+    max_orders_per_day: 20
+
+trading:
+  max_position_size_usdt: 100.0
+  max_trades_per_hour: 20
+  cooldown_seconds: 60
+  exploration_enabled: true
+  exploration_until_total_trades: 50
+  exploration_ignore_cooldown: true
+  auto_tune_enabled: true
+  auto_tune_lookback_closed_trades: 30
+  auto_tune_every_closed_trades: 5
+  equity_snapshot_seconds: 30
+  # Execution realism (simulation)
+  spread_bps: 5
+  dynamic_slippage_enabled: true
+  slippage_atr_multiplier: 0.5
+  partial_fills_enabled: true
+  partial_fill_probability: 0.3
+  partial_fill_min_ratio: 0.3
+  partial_fill_max_ratio: 1.0
+  fee_rate: 0.001
+  slippage: 0.0005
+  min_order_quantity: 0.001
+
+auto_tune:
+  enabled: true
+  min_closed_trades: 10
+  bootstrap_entry_prob: 0.25
+  target_trades_per_hour: 10
+  target_execution_rate: 0.6
+  controls_min_interval_minutes: 5
+  controls_min_new_events: 20
+  controls_min_events_hour: 10
+  max_trades_per_hour_cap: 240
+  good_profit_factor: 1.2
+  bad_profit_factor: 0.95
+  good_win_rate: 55.0
+  bad_win_rate: 40.0
+  good_expectancy: 0.0
+
+risk:
+  max_daily_loss_usdt: 50.0
+  max_drawdown_usdt: 100.0
+  risk_pct_per_trade: 0.01
+  circuit_breaker_enabled: true
+  pause_until_next_day: true
+  pause_timezone: "America/Panama"
+
+gate:
+  enabled: true
+  min_trades_today: 5
+  min_trades_for_stats: 15
+  min_sharpe: 0.1
+  min_profit_factor: 1.05
+  min_expectancy: 0.0
+  min_win_rate: 0.0
+  min_volatility_regime: 0.0
+  max_volatility_regime: 1.0
+  fear_greed_min: null
+  fear_greed_max: null
+
+strategy:
+  default: "scalping_aggressive"
+  runtime_config_path: "state/config.json"
+  allow_ui_switch: true
+  strategies:
+    conservative:
+      rsi_buy: 24
+      rsi_sell: 78
+    moderate:
+      rsi_buy: 30
+      rsi_sell: 70
+    aggressive:
+      rsi_buy: 40
+      rsi_sell: 60
+    scalping_aggressive:
+      rsi_buy: 35
+      rsi_sell: 65
+      ml_confidence_boost: 0.2
+    ema_rsi_volume:
+      ema_fast_period: 5
+      ema_slow_period: 20
+      rsi_period: 7
+      rsi_buy_threshold: 30
+      rsi_sell_threshold: 70
+      require_rsi_cross: true
+      volume_sma_period: 20
+      require_volume_spike: true
+      volume_spike_multiplier: 1.5
+      risk_pct_per_trade: 0.005
+      stop_atr_multiplier: 2.0
+      profit_target_multiplier: 3.0
+    bollinger_range:
+      bollinger_period: 20
+      bollinger_stddev: 2.0
+      touch_tolerance_pct: 0.001
+      rsi_period: 14
+      rsi_oversold: 30
+      rsi_overbought: 70
+      confirm_reversal: true
+      max_ema_separation_pct: 0.003
+      risk_pct_per_trade: 0.005
+      stop_atr_multiplier: 1.5
+      profit_target_multiplier: 1.5
+      take_profit_target: "middle"
+    multifactor:
+      score_buy_threshold: 0.35
+      score_sell_threshold: -0.35
+
+ml:
+  model_type: "lightgbm"
+  retrain_daily: true
+  history_days: 180
+  features_window: 200
+  walk_forward: false
+
+openai:
+  enabled: true
+  api_key_env_var: "OPENAI_API_KEY"
+  model: "gpt-4.1-mini"
+  max_tokens: 1500
+
+rl:
+  enabled: true
+  policy_path: "state/rl_policy.json"
+  learning_rate: 0.05
+
+backtesting:
+  export_dir: "backtests"
+  initial_cash: 10000
+  fee_rate: 0.0005
+  auto:
+    enabled: true
+    apply_best: true
+    metric: "sharpe"          # sharpe|pnl
+    history_days: 180
+    limit_candles: 0
+    train_size: 43200         # ~30d @ 1m
+    test_size: 10080          # ~7d @ 1m
+    step_size: 10080          # weekly
+    max_folds: 8
+    grid_cap: 30              # max configs sampled from grid
+    min_folds: 2
+    min_avg_test_sharpe: 0.05
+    min_total_test_pnl: 0.0
+
+reports:
+  reports_dir: "reports"
+  keep_last_days: 30
+
+scheduler:
+  trading_interval_seconds: 30  # For 1m scalping
+  daily_run_time: "23:55"
+
+frontend:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8000
+
+sentiment:
+  enabled: false
+  provider: "cmc"
+  refresh_seconds: 300
+  coinmarketcap_api_key: ""   # Optional; required when provider=cmc
+
+sentiment_policy:
+  enabled: true
+  # Regime thresholds for CNN Fear & Greed (0..100)
+  fear_threshold: 25
+  greed_threshold: 75
+  # Risk/activity multipliers by regime
+  fear:
+    risk_pct_multiplier: 0.5
+    max_trades_per_hour_multiplier: 0.5
+    cooldown_seconds_multiplier: 2.0
+  neutral:
+    risk_pct_multiplier: 1.0
+    max_trades_per_hour_multiplier: 1.0
+    cooldown_seconds_multiplier: 1.0
+  greed:
+    risk_pct_multiplier: 0.8
+    max_trades_per_hour_multiplier: 1.0
+    cooldown_seconds_multiplier: 1.0
+
+readiness:
+  # Advisory only (never places real orders): when to show "ready for micro-live review"
+  window_days: 14
+  min_days: 14
+  min_trades: 200
+  min_profit_factor: 1.15
+  min_sharpe: 0.20
+  max_drawdown: 300.0
+  max_execution_error_rate: 0.02
+  min_backtest_folds: 3
+  min_backtest_avg_sharpe: 0.10
+  min_score: 80

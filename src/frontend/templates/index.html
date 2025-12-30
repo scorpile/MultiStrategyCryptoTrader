@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trading Bot Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="header-left">
+        <h1>Autonomous Crypto Trading Bot</h1>
+        <div class="muted header-subtitle">Paper by default; live requires explicit arming + confirmation.</div>
+    </div>
+    <div class="header-right">
+        <div class="bot-status">
+            <div class="status-indicator"></div>
+            <span>Running</span>
+        </div>
+        <div class="badges">
+            <span class="badge badge--neutral" data-field="health-exec">Exec: n/a</span>
+            <span class="badge badge--neutral" data-field="health-data">Data: n/a</span>
+            <span class="badge badge--neutral" data-field="health-sentiment">Sentiment: n/a</span>
+            <span class="badge badge--neutral" data-field="health-gate">Gate: n/a</span>
+            <span class="badge badge--neutral" data-field="health-risk">Risk: n/a</span>
+            <span class="badge badge--neutral" data-field="health-manual">Manual: n/a</span>
+            <span class="badge badge--neutral" data-field="health-backtest">Backtest: n/a</span>
+            <span class="badge badge--neutral" data-field="health-ready">Ready: n/a</span>
+        </div>
+        <button id="toggleExecutionMode" class="btn-primary" title="Switch execution mode (LIVE requires env arming)">Go Live</button>
+        <button id="resetBot" class="danger-btn" title="Wipe DB and reset runtime state">RESET</button>
+    </div>
+</header>
+<main>
+    <section class="kpi-grid">
+        <article class="kpi">
+            <div class="kpi-label">Total Value</div>
+            <div class="kpi-value"><span data-field="kpi-total-value">0</span></div>
+            <div class="kpi-sub muted">Cash <span data-field="kpi-cash">0</span> | Pos <span data-field="kpi-positions">0</span></div>
+        </article>
+        <article class="kpi">
+            <div class="kpi-label">PnL Today</div>
+            <div class="kpi-value"><span data-field="kpi-pnl-today">0</span></div>
+            <div class="kpi-sub muted">Trades <span data-field="kpi-trades-today">0</span> | WR <span data-field="kpi-win-rate">0%</span></div>
+        </article>
+        <article class="kpi">
+            <div class="kpi-label">Exec Rate (1h)</div>
+            <div class="kpi-value"><span data-field="kpi-exec-rate">n/a</span></div>
+            <div class="kpi-sub muted"><span data-field="blocks-1h">n/a</span></div>
+        </article>
+        <article class="kpi">
+            <div class="kpi-label">Fear &amp; Greed</div>
+            <div class="kpi-value"><span data-field="kpi-fng">n/a</span></div>
+            <div class="kpi-sub muted"><span data-field="fng-source">n/a</span> | <span data-field="fng-updated">n/a</span></div>
+        </article>
+    </section>
+
+    <section class="dashboard-grid">
+        <section class="stack">
+            <section class="grid-2">
+                <article class="panel">
+                    <div class="panel-header">
+                        <h2>PnL (7d)</h2>
+                        <span class="muted">Daily</span>
+                    </div>
+                    <canvas id="pnlChart" width="520" height="180"></canvas>
+                </article>
+                <article class="panel">
+                    <div class="panel-header">
+                        <h2>Equity (15m)</h2>
+                        <span class="muted">Snapshots</span>
+                    </div>
+                    <canvas id="equityChart" width="520" height="180"></canvas>
+                    <p class="muted">From DB snapshots (last ~15 min).</p>
+                </article>
+            </section>
+
+            <section class="grid-2">
+                <article class="panel">
+                    <div class="panel-header">
+                        <h2>Blocks (1h)</h2>
+                        <span class="muted">Why trades are blocked</span>
+                    </div>
+                    <canvas id="blocksChart" width="520" height="180"></canvas>
+                </article>
+                <article class="panel">
+                    <div class="panel-header">
+                        <h2>Latest Signals</h2>
+                        <span class="muted">Last 5</span>
+                    </div>
+                    <ul id="signalsList"></ul>
+                </article>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>Activity</h2>
+                    <span class="muted">Live</span>
+                </div>
+                <div id="activityLog" class="activity-log">
+                    <p class="activity-item">Bot started and monitoring...</p>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>Trades</h2>
+                    <span class="muted">Open + recent closes</span>
+                </div>
+                <div class="table-wrap">
+                    <table class="trades-table">
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Qty</th>
+                                <th>Entry</th>
+                                <th>Exit</th>
+                                <th>Entry Cost</th>
+                                <th>Exit Value</th>
+                                <th>PnL</th>
+                                <th>Fees</th>
+                                <th>Tag</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradesTableBody"></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <section class="stack">
+            <section class="panel" id="strategy-panel">
+                <div class="panel-header">
+            <h2>Controls</h2>
+            <span class="muted">Strategy + training</span>
+        </div>
+                <div class="controls">
+                    <label for="symbolSelect">Coin</label>
+                    <select id="symbolSelect"></select>
+                    <button id="applySymbol">Set</button>
+                </div>
+                <div class="controls">
+                    <label for="strategySelect">Active strategy</label>
+                    <select id="strategySelect"></select>
+                    <button id="applyStrategy">Apply</button>
+                </div>
+                <div class="controls">
+                    <span class="muted">Manual entries:</span>
+                    <button id="toggleManualPause" class="btn-primary">Pause entries</button>
+                    <span class="muted" data-field="manual-pause-status">n/a</span>
+                </div>
+                <div class="strategy-details">
+                    <p><strong>Current:</strong> <span data-field="strategy-name"></span></p>
+                    <p><strong>Description:</strong> <span data-field="strategy-description"></span></p>
+                    <p><strong>ML Confidence:</strong> <span data-field="ml-confidence"></span></p>
+            <p><strong>RL Policy Score:</strong> <span data-field="rl-score"></span></p>
+        </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>Readiness</h2>
+                    <span class="muted">Micro-live advisory</span>
+                </div>
+                <ul class="metrics-list">
+                    <li>Status: <span data-field="readiness-status">n/a</span></li>
+                    <li>Score: <span data-field="readiness-score">0</span></li>
+                    <li>Updated: <span data-field="readiness-updated">n/a</span></li>
+                </ul>
+                <ul class="metrics-list" id="readinessReasons"></ul>
+                <p class="muted">Advisory only; never places real orders.</p>
+            </section>
+
+            <section class="grid compact-grid">
+                <article class="panel">
+                    <h3>Daily Metrics</h3>
+                    <ul class="metrics-list">
+                <li>PnL: <span data-field="pnl-today">0</span></li>
+                <li>Trades: <span data-field="trades-today">0</span></li>
+                <li>Win rate: <span data-field="win-rate">0%</span></li>
+                <li>Sharpe: <span data-field="sharpe">0</span></li>
+                <li>Expectancy: <span data-field="expectancy">0</span></li>
+                <li>Profit Factor: <span data-field="profit-factor">0</span></li>
+            </ul>
+        </article>
+        <article class="panel">
+            <h3>Portfolio</h3>
+            <ul class="metrics-list">
+                <li>Cash Balance: <span data-field="cash-balance">0</span></li>
+                <li>Total Value: <span data-field="total-value">0</span></li>
+                <li>Open Positions: <span data-field="open-positions">0</span></li>
+            </ul>
+        </article>
+        <article class="panel">
+            <h3>Probability Flag</h3>
+            <p>Profitability Achieved? <span data-field="probability-flag"></span></p>
+            <p>Details:</p>
+            <ul class="metrics-list">
+                <li>PnL Normalized: <span data-field="pnl-norm">0</span></li>
+                <li>Win Rate Norm: <span data-field="win-rate-norm">0</span></li>
+                <li>Sharpe Norm: <span data-field="sharpe-norm">0</span></li>
+                <li>Profit Factor Norm: <span data-field="profit-factor-norm">0</span></li>
+                <li>Expectancy Norm: <span data-field="expectancy-norm">0</span></li>
+            </ul>
+        </article>
+        <article class="panel">
+            <h3>Volatility Regime</h3>
+            <p><span data-field="volatility-regime">0</span></p>
+        </article>
+        <article class="panel">
+            <h3>Live Price & Indicators</h3>
+            <ul class="metrics-list">
+                <li>Current Price: <span data-field="current-price">0</span></li>
+                <li>RSI: <span data-field="rsi">0</span></li>
+                <li>EMA Fast: <span data-field="ema-fast">0</span></li>
+                <li>EMA Slow: <span data-field="ema-slow">0</span></li>
+                <li>ATR: <span data-field="atr">0</span></li>
+                <li>Volume SMA: <span data-field="volume-sma">0</span></li>
+                <li>MACD Histogram: <span data-field="macd-histogram">0</span></li>
+                <li>Bollinger Width: <span data-field="bollinger-width">0</span></li>
+                <li>VWAP: <span data-field="vwap">0</span></li>
+            </ul>
+        </article>
+        <article class="panel">
+            <h3>Crypto Fear &amp; Greed</h3>
+            <ul class="metrics-list">
+                <li>Index: <span data-field="fng-value">n/a</span></li>
+                <li>Class: <span data-field="fng-class">n/a</span></li>
+                <li>Updated: <span data-field="fng-updated">n/a</span></li>
+                <li>Regime: <span data-field="fng-regime">n/a</span></li>
+                <li>Risk mult: <span data-field="fng-risk-mult">1.0</span></li>
+            </ul>
+            <p class="muted">Source: <span data-field="fng-source">n/a</span> (external).</p>
+            <div class="controls">
+                <button id="toggleSentiment" class="btn-primary">Enable</button>
+                <button id="refreshSentiment">Refresh</button>
+            </div>
+        </article>
+        <article class="panel">
+            <h3>Training Progress</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+            </div>
+            <p><span data-field="training-progress">0%</span></p>
+            <p>Mode: <span data-field="validation-mode">Training</span></p>
+            <button id="startTraining" class="btn-primary">Override Schedule and Start Training</button>
+            <p id="trainingStatus"></p>
+        </article>
+        <article class="panel">
+            <h3>Trading Gate</h3>
+            <p>New entries: <span data-field="gate-status">unknown</span></p>
+            <p class="muted">Exits (SELL / SL / TP) always allowed.</p>
+            <ul class="metrics-list" id="gateReasons"></ul>
+        </article>
+        <article class="panel">
+            <h3>Risk Pause</h3>
+            <p>Status: <span data-field="risk-pause-status">n/a</span></p>
+            <p>Reason: <span data-field="risk-pause-reason">n/a</span></p>
+            <p>Until: <span data-field="risk-pause-until">n/a</span></p>
+            <p class="muted">Triggers on daily loss/drawdown limits.</p>
+            <div class="controls">
+                <button id="clearRiskPause">Clear</button>
+            </div>
+        </article>
+        <article class="panel">
+            <h3>Auto-Tune</h3>
+            <p>Status: <span data-field="auto-tune-status">n/a</span></p>
+            <p>Last: <span data-field="auto-tune-updated">n/a</span></p>
+            <p>Exec rate (1h): <span data-field="exec-rate-1h">n/a</span></p>
+            <p>Top blocks (1h): <span data-field="blocks-1h">n/a</span></p>
+            <p>Backtest: <span data-field="backtest-status">n/a</span></p>
+            <p>Backtest best: <span data-field="backtest-best">n/a</span></p>
+            <ul class="metrics-list" id="autoTuneReasons"></ul>
+        </article>
+    </section>
+
+        </section>
+    </section>
+</main>
+
+<script>
+    const initialStatus = {{ status | tojson | safe }};
+    const initialStrategies = {{ strategies | tojson | safe }};
+    const _equitySeries = []; // fallback when DB series is empty
+
+    function populateSymbols(symbols, current) {
+        const select = document.getElementById('symbolSelect');
+        if (!select) return;
+        const list = Array.isArray(symbols) && symbols.length ? symbols : ['SOLUSDT', 'ETHUSDT', 'BTCUSDT'];
+        const currentUpper = String(current || '').toUpperCase();
+        select.innerHTML = '';
+        list.forEach((sym) => {
+            const value = String(sym || '').toUpperCase();
+            if (!value) return;
+            const option = document.createElement('option');
+            option.value = value;
+            const base = value.endsWith('USDT') ? value.slice(0, -4) : value;
+            option.textContent = base;
+            option.title = value;
+            if (value === currentUpper) option.selected = true;
+            select.appendChild(option);
+        });
+    }
+
+    function populateStrategies(strategies, active) {
+        const select = document.getElementById('strategySelect');
+        select.innerHTML = '';
+        strategies.forEach((strategy) => {
+            const option = document.createElement('option');
+            option.value = strategy.name;
+            option.textContent = `${strategy.name} - ${strategy.description}`;
+            if (strategy.name === active) {
+                option.selected = true;
+                document.querySelector('[data-field="strategy-description"]').textContent = strategy.description;
+            }
+            select.appendChild(option);
+        });
+        document.querySelector('[data-field="strategy-name"]').textContent = active;
+    }
+
+    function updateDashboard(data) {
+        const metrics = Array.isArray(data.recent_metrics) ? data.recent_metrics : [];
+        function _setText(selector, text) {
+            const nodes = document.querySelectorAll(selector);
+            if (!nodes || !nodes.length) return;
+            nodes.forEach((el) => {
+                try { el.textContent = text; } catch (e) { /* ignore */ }
+            });
+        }
+        function _setHTML(selector, html) {
+            const nodes = document.querySelectorAll(selector);
+            if (!nodes || !nodes.length) return;
+            nodes.forEach((el) => {
+                try { el.innerHTML = html; } catch (e) { /* ignore */ }
+            });
+        }
+
+        // Execution mode (paper/live)
+        const exec = data.execution || {};
+        const execMode = String(exec.mode || 'paper').toLowerCase();
+        const liveArmed = exec.live_armed === true;
+        const liveAvailable = exec.live_available !== false;
+        const execLabel = execMode === 'live' ? (liveArmed ? 'LIVE' : 'LIVE (not armed)') : 'PAPER';
+        _setText('[data-field="health-exec"]', `Exec: ${execLabel}`);
+        const sym = (data.symbol || '').toString().toUpperCase();
+        const symSelect = document.getElementById('symbolSelect');
+        if (symSelect && sym) {
+            if (document.activeElement !== symSelect && symSelect.value.toUpperCase() !== sym) {
+                symSelect.value = sym;
+            }
+        }
+        document.querySelectorAll('[data-field="health-exec"]').forEach((el) => {
+            el.classList.remove('badge--ok', 'badge--warn', 'badge--bad', 'badge--neutral');
+            if (execMode === 'paper') el.classList.add('badge--ok');
+            else if (liveArmed) el.classList.add('badge--bad');
+            else el.classList.add('badge--warn');
+        });
+        const execBtn = document.getElementById('toggleExecutionMode');
+        if (execBtn) {
+            execBtn.textContent = execMode === 'live' ? 'Go Paper' : 'Go Live';
+            execBtn.disabled = !liveAvailable;
+        }
+        const latestMetric = metrics.length ? metrics[0] : {};
+        _setText('[data-field="pnl-today"]', latestMetric.pnl || 0);
+        _setText('[data-field="trades-today"]', latestMetric.trades_count || 0);
+        const winRate = typeof latestMetric.win_rate === 'number' ? latestMetric.win_rate : 0;
+        _setText('[data-field="win-rate"]', `${winRate.toFixed(2)}%`);
+        const sharpe = typeof latestMetric.sharpe === 'number' ? latestMetric.sharpe : 0;
+        _setText('[data-field="sharpe"]', sharpe.toFixed(2));
+        const expectancy = typeof latestMetric.expectancy === 'number' ? latestMetric.expectancy : 0;
+        _setText('[data-field="expectancy"]', expectancy.toFixed(2));
+        const profitFactor = typeof latestMetric.profit_factor === 'number' ? latestMetric.profit_factor : 0;
+        _setText('[data-field="profit-factor"]', profitFactor.toFixed(2));
+
+        const portfolio = data.portfolio || {};
+        _setText('[data-field="cash-balance"]', (portfolio.cash_balance || 0).toFixed(2));
+        _setText('[data-field="total-value"]', (portfolio.total_value || 0).toFixed(2));
+        _setText('[data-field="open-positions"]', portfolio.open_positions ? portfolio.open_positions.length : 0);
+
+        // KPI mirrors (top row)
+        _setText('[data-field="kpi-total-value"]', (portfolio.total_value || 0).toFixed(2));
+        _setText('[data-field="kpi-cash"]', (portfolio.cash_balance || 0).toFixed(2));
+        _setText('[data-field="kpi-positions"]', portfolio.open_positions ? portfolio.open_positions.length : 0);
+        const pnlTodayNum = Number(latestMetric.pnl || 0);
+        _setText('[data-field="kpi-pnl-today"]', Number.isFinite(pnlTodayNum) ? pnlTodayNum.toFixed(2) : (latestMetric.pnl || 0));
+        _setText('[data-field="kpi-trades-today"]', latestMetric.trades_count || 0);
+        _setText('[data-field="kpi-win-rate"]', `${winRate.toFixed(1)}%`);
+
+        const probabilityFlag = data.probability_flag || {};
+        _setText('[data-field="probability-flag"]', probabilityFlag.is_enabled ? 'Yes' : 'No');
+        const probabilityValue = typeof probabilityFlag.probability === 'number' ? probabilityFlag.probability : 0;
+        _setText('[data-field="probability-value"]', `${probabilityValue.toFixed(2)}%`);
+        const details = probabilityFlag.details || {};
+        _setText('[data-field="pnl-norm"]', (details.normalized_pnl || 0).toFixed(2));
+        _setText('[data-field="win-rate-norm"]', (details.normalized_win_rate || 0).toFixed(2));
+        _setText('[data-field="sharpe-norm"]', (details.normalized_sharpe || 0).toFixed(2));
+        _setText('[data-field="profit-factor-norm"]', (details.normalized_profit_factor || 0).toFixed(2));
+        _setText('[data-field="expectancy-norm"]', (details.normalized_expectancy || 0).toFixed(2));
+
+        function _setBadge(fieldSelector, text, level) {
+            const el = document.querySelector(fieldSelector);
+            if (!el) return;
+            el.textContent = text;
+            el.classList.remove('badge--ok', 'badge--warn', 'badge--bad', 'badge--neutral');
+            el.classList.add(level || 'badge--neutral');
+        }
+
+        function _ageSeconds(iso) {
+            if (!iso) return null;
+            const t = Date.parse(iso);
+            if (!Number.isFinite(t)) return null;
+            return Math.max(0, (Date.now() - t) / 1000);
+        }
+        _setText('[data-field="volatility-regime"]', data.volatility_regime || 0);
+
+        const mlConfidence = data.ml_signal && typeof data.ml_signal.confidence === 'number' ? data.ml_signal.confidence : 0;
+        _setText('[data-field="ml-confidence"]', `${(mlConfidence * 100).toFixed(1)}%`);
+        const rlScore = data.rl_result && typeof data.rl_result.score === 'number'
+            ? data.rl_result.score.toFixed(3)
+            : 'n/a';
+        _setText('[data-field="rl-score"]', rlScore);
+
+        // Live indicators
+        const liveIndicators = data.live_indicators || {};
+        _setText('[data-field="current-price"]', data.current_price || 0);
+        _setText('[data-field="rsi"]', (liveIndicators.rsi || 0).toFixed(2));
+        _setText('[data-field="ema-fast"]', (liveIndicators.ema_fast || 0).toFixed(4));
+        _setText('[data-field="ema-slow"]', (liveIndicators.ema_slow || 0).toFixed(4));
+        _setText('[data-field="atr"]', (liveIndicators.atr || 0).toFixed(4));
+        _setText('[data-field="volume-sma"]', (liveIndicators.volume_sma || 0).toFixed(0));
+        _setText('[data-field="macd-histogram"]', (liveIndicators.macd_histogram || 0).toFixed(4));
+        _setText('[data-field="bollinger-width"]', (liveIndicators.bollinger_width || 0).toFixed(4));
+        _setText('[data-field="vwap"]', (liveIndicators.vwap || 0).toFixed(4));
+
+        // Crypto Fear & Greed
+        const fng = data.fear_greed || {};
+        const fngEnabled = fng.enabled !== false;
+        const fngValue = (typeof fng.value === 'number' || typeof fng.value === 'string') ? Number(fng.value) : null;
+        const fngError = fng.error ? String(fng.error) : '';
+        _setText('[data-field="fng-value"]', !fngEnabled ? 'DISABLED' : (Number.isFinite(fngValue) ? fngValue.toFixed(0) : (fngError ? `ERR:${fngError}` : 'n/a')));
+        _setText('[data-field="fng-class"]', !fngEnabled ? 'n/a' : (fng.classification || 'n/a'));
+        _setText('[data-field="fng-updated"]', !fngEnabled ? 'n/a' : (fng.timestamp_utc || fng.updated_at || 'n/a'));
+        _setText('[data-field="fng-source"]', fng.source || 'n/a');
+        _setText('[data-field="kpi-fng"]', !fngEnabled ? 'OFF' : (Number.isFinite(fngValue) ? `${fngValue.toFixed(0)} ${fng.classification || ''}`.trim() : (fngError ? `ERR` : 'n/a')));
+        const sp = data.sentiment_policy || {};
+        _setText('[data-field="fng-regime"]', sp.regime || 'n/a');
+        const rm = sp.multipliers && sp.multipliers.risk_pct_multiplier !== undefined ? Number(sp.multipliers.risk_pct_multiplier) : 1.0;
+        _setText('[data-field="fng-risk-mult"]', Number.isFinite(rm) ? rm.toFixed(2) : '1.00');
+        const toggleBtn = document.getElementById('toggleSentiment');
+        if (toggleBtn) toggleBtn.textContent = fngEnabled ? 'Disable' : 'Enable';
+
+        // Training progress
+        const progress = data.training_progress || 0;
+        _setText('[data-field="training-progress"]', `${progress}%`);
+        const progressFill = document.getElementById('progressFill'); if (progressFill) progressFill.style.width = `${progress}%`;
+        _setText('[data-field="validation-mode"]', data.validation_mode ? 'Validation' : 'Training');
+
+        // Trading gate
+        const gate = data.gate || {};
+        const gateEnabled = gate.enabled !== false;
+        const canEnter = gate.can_enter !== false;
+        _setText('[data-field="gate-status"]', !gateEnabled ? 'DISABLED' : (canEnter ? 'OPEN' : 'CLOSED'));
+        _setBadge('[data-field="health-gate"]', `Gate: ${!gateEnabled ? 'DISABLED' : (canEnter ? 'OPEN' : 'CLOSED')}`, !gateEnabled ? 'badge--neutral' : (canEnter ? 'badge--ok' : 'badge--warn'));
+        const reasonsEl = document.getElementById('gateReasons');
+        if (reasonsEl) {
+            reasonsEl.innerHTML = '';
+            const reasons = Array.isArray(gate.reasons) ? gate.reasons : [];
+            (reasons.length ? reasons : ['n/a']).slice(0, 6).forEach((r) => {
+                const li = document.createElement('li');
+                li.textContent = r;
+                reasonsEl.appendChild(li);
+            });
+        }
+
+        // Risk pause
+        const rp = data.risk_pause || {};
+        const paused = rp.paused === true;
+        _setText('[data-field="risk-pause-status"]', paused ? 'PAUSED' : 'OK');
+        _setText('[data-field="risk-pause-reason"]', paused ? (rp.reason || 'n/a') : 'n/a');
+        _setText('[data-field="risk-pause-until"]', paused ? (rp.until_utc || 'n/a') : 'n/a');
+        _setBadge('[data-field="health-risk"]', `Risk: ${paused ? 'PAUSED' : 'OK'}`, paused ? 'badge--bad' : 'badge--ok');
+
+        // Manual pause (new entries only)
+        const mp = data.manual_pause || {};
+        const mpPaused = mp.paused === true;
+        _setText('[data-field="manual-pause-status"]', mpPaused ? `PAUSED${mp.reason ? ` (${mp.reason})` : ''}` : 'OK');
+        _setBadge('[data-field="health-manual"]', `Manual: ${mpPaused ? 'PAUSED' : 'OK'}`, mpPaused ? 'badge--warn' : 'badge--ok');
+        const mpBtn = document.getElementById('toggleManualPause');
+        if (mpBtn) mpBtn.textContent = mpPaused ? 'Resume entries' : 'Pause entries';
+
+        // Auto-tune status
+        const at = data.auto_tune || {};
+        const changedKeys = Array.isArray(at.changed_keys) ? at.changed_keys : [];
+        _setText('[data-field="auto-tune-status"]', at.changed ? `UPDATED (${changedKeys.length})` : (Object.keys(at).length ? 'OK' : 'n/a'));
+        _setText('[data-field="auto-tune-updated"]', at.updated_at || 'n/a');
+        const atReasonsEl = document.getElementById('autoTuneReasons');
+        if (atReasonsEl) {
+            atReasonsEl.innerHTML = '';
+            const reasons = Array.isArray(at.reasons) ? at.reasons : [];
+            (reasons.length ? reasons : ['n/a']).slice(0, 5).forEach((r) => {
+                const li = document.createElement('li');
+                li.textContent = r;
+                atReasonsEl.appendChild(li);
+            });
+            if (changedKeys.length) {
+                const li = document.createElement('li');
+                li.textContent = `Keys: ${changedKeys.slice(0, 8).join(', ')}${changedKeys.length > 8 ? '…' : ''}`;
+                atReasonsEl.appendChild(li);
+            }
+        }
+
+        const ds1h = data.decision_stats_last_hour || {};
+        const total1h = Number(ds1h.total || 0);
+        const exec1h = Number(ds1h.executed || 0);
+        const rate = total1h > 0 ? (exec1h / total1h) : null;
+        _setText('[data-field="exec-rate-1h"]', (rate !== null && Number.isFinite(rate)) ? `${(rate * 100).toFixed(1)}% (${exec1h}/${total1h})` : 'n/a');
+        _setText('[data-field="kpi-exec-rate"]', (rate !== null && Number.isFinite(rate)) ? `${(rate * 100).toFixed(1)}%` : 'n/a');
+        const blockedMap = (ds1h.blocked_by_reason && typeof ds1h.blocked_by_reason === 'object') ? ds1h.blocked_by_reason : {};
+        const topBlocks = Object.entries(blockedMap)
+            .sort((a, b) => (Number(b[1] || 0) - Number(a[1] || 0)))
+            .slice(0, 3)
+            .map(([k, v]) => `${k}:${v}`)
+            .join(', ');
+        _setText('[data-field="blocks-1h"]', topBlocks || 'n/a');
+        drawBlocksChart(blockedMap);
+
+        const bt = data.backtest || {};
+        if (bt.running) {
+            _setText('[data-field="backtest-status"]', 'RUNNING');
+        } else if (bt.skipped) {
+            const reason = String(bt.reason || 'skipped');
+            if (reason === 'not_enough_candles') {
+                const have = Number(bt.available_candles || 0);
+                const need = Number(bt.required_candles || 0);
+                _setText('[data-field="backtest-status"]', `SKIPPED | need candles ${have}/${need}`);
+            } else {
+                _setText('[data-field="backtest-status"]', `SKIPPED (${reason})`);
+            }
+        } else if (bt.error) {
+            _setText('[data-field="backtest-status"]', `ERROR (${bt.error})`);
+        } else if (bt.summary) {
+            const s = bt.summary || {};
+            const folds = Number(s.folds || 0);
+            const pnl = Number(s.total_test_pnl || 0);
+            const sh = Number(s.avg_test_sharpe || 0);
+            const applied = bt.applied ? 'APPLIED' : 'NOAPPLY';
+            _setText('[data-field="backtest-status"]', `${applied} | folds ${folds} | pnl ${pnl.toFixed(2)} | sharpe ${sh.toFixed(2)}`);
+        } else {
+            _setText('[data-field="backtest-status"]', 'n/a');
+        }
+        const btLabel = bt.running
+            ? 'RUNNING'
+            : (bt.skipped ? 'SKIPPED' : (bt.applied ? 'APPLIED' : (bt.summary ? 'OK' : 'n/a')));
+        const btLevel = bt.running
+            ? 'badge--neutral'
+            : (bt.applied ? 'badge--ok' : (bt.skipped ? 'badge--warn' : 'badge--neutral'));
+        _setBadge('[data-field="health-backtest"]', `Backtest: ${btLabel}`, btLevel);
+        if (bt.best_config && typeof bt.best_config === 'object') {
+            const keys = Object.keys(bt.best_config);
+            _setText('[data-field="backtest-best"]', keys.length ? keys.slice(0, 6).map(k => `${k}=${bt.best_config[k]}`).join(', ') : 'n/a');
+        } else {
+            _setText('[data-field="backtest-best"]', 'n/a');
+        }
+
+        // Health: data freshness
+        const lastUpdate = data.last_update || '';
+        const age = _ageSeconds(lastUpdate);
+        if (age === null) _setBadge('[data-field="health-data"]', 'Data: n/a', 'badge--neutral');
+        else if (age < 45) _setBadge('[data-field="health-data"]', `Data: ${Math.round(age)}s`, 'badge--ok');
+        else if (age < 120) _setBadge('[data-field="health-data"]', `Data: ${Math.round(age)}s`, 'badge--warn');
+        else _setBadge('[data-field="health-data"]', `Data: ${Math.round(age)}s`, 'badge--bad');
+
+        // Health: sentiment freshness
+        const fngTs = fng.timestamp_utc || fng.updated_at || '';
+        const fngAge = _ageSeconds(fngTs);
+        if (fng.enabled === false) _setBadge('[data-field="health-sentiment"]', 'Sentiment: OFF', 'badge--neutral');
+        else if (fngAge === null) _setBadge('[data-field="health-sentiment"]', 'Sentiment: n/a', 'badge--neutral');
+        else if (fngAge < 3600) _setBadge('[data-field="health-sentiment"]', `Sentiment: ${Math.round(fngAge/60)}m`, 'badge--ok');
+        else if (fngAge < 6*3600) _setBadge('[data-field="health-sentiment"]', `Sentiment: ${Math.round(fngAge/3600)}h`, 'badge--warn');
+        else _setBadge('[data-field="health-sentiment"]', `Sentiment: ${Math.round(fngAge/3600)}h`, 'badge--bad');
+
+        // Readiness flag (micro-live advisory)
+        const rf = data.readiness_flag || {};
+        const rd = (rf.details && typeof rf.details === 'object') ? rf.details : ((rf.metadata && typeof rf.metadata === 'object') ? rf.metadata : {});
+        const ready = rf.is_enabled === 1 || rf.is_enabled === true || rd.ready === true;
+        const score = Number(rd.score ?? rf.probability ?? 0);
+        _setText('[data-field="readiness-status"]', ready ? 'READY (review)' : 'NOT READY');
+        _setText('[data-field="readiness-score"]', Number.isFinite(score) ? score.toFixed(2) : 'n/a');
+        _setText('[data-field="readiness-updated"]', rd.updated_at || rf.updated_at || 'n/a');
+        _setBadge('[data-field="health-ready"]', `Ready: ${ready ? 'YES' : 'NO'}`, ready ? 'badge--ok' : 'badge--warn');
+        const rr = document.getElementById('readinessReasons');
+        if (rr) {
+            rr.innerHTML = '';
+            const reasons = Array.isArray(rd.reasons) ? rd.reasons : [];
+            (reasons.length ? reasons : ['n/a']).slice(0, 6).forEach((r) => {
+                const li = document.createElement('li');
+                li.textContent = r;
+                rr.appendChild(li);
+            });
+        }
+
+        // Training button
+        const isTraining = data.is_training || false;
+        const button = document.getElementById('startTraining');
+        const status = document.getElementById('trainingStatus');
+        if (button) button.disabled = isTraining;
+        if (status) status.textContent = isTraining ? (data.training_status || 'Training in progress...') : '';
+
+        renderSignals(Array.isArray(data.last_decisions) ? data.last_decisions : []);
+        drawPnlChart(Array.isArray(data.pnl_series) ? data.pnl_series : []);
+
+        const equitySeries = Array.isArray(data.equity_series) ? data.equity_series : [];
+        if (equitySeries.length) {
+            drawEquityChart(equitySeries.map(p => ({ t: Date.parse(p.snapshot_time || p.t || ''), value: p.total_value ?? p.value })));
+        } else {
+            // Fallback: keep a local rolling window (default ~15 minutes @ 5s refresh = 180 points).
+            const nowMs = Date.now();
+            const equity = Number((data.portfolio && data.portfolio.total_value) || 0);
+            if (Number.isFinite(equity) && equity > 0) {
+                _equitySeries.push({ t: nowMs, value: equity });
+            }
+            const maxAgeMs = 15 * 60 * 1000;
+            while (_equitySeries.length && (_equitySeries[0].t < nowMs - maxAgeMs)) {
+                _equitySeries.shift();
+            }
+            drawEquityChart(_equitySeries);
+        }
+
+        updateActivityLog(data);
+        renderTrades(data);
+    }
+
+    function renderTrades(data) {
+        const tbody = document.getElementById('tradesTableBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        function fmt(n, d=4) {
+            const v = Number(n);
+            return Number.isFinite(v) ? v.toFixed(d) : 'n/a';
+        }
+        function fmt2(n) { return fmt(n, 2); }
+        function fmtQty(n) { return fmt(n, 4); }
+        function clsPnl(n) {
+            const v = Number(n);
+            if (!Number.isFinite(v)) return '';
+            if (v > 0) return 'pnl-pos';
+            if (v < 0) return 'pnl-neg';
+            return '';
+        }
+
+        const portfolio = data.portfolio || {};
+        const currentPrice = Number(data.current_price || 0);
+        const openPositions = Array.isArray(portfolio.open_positions) ? portfolio.open_positions : [];
+
+        openPositions.forEach((pos) => {
+            const qty = Number(pos.quantity || 0);
+            if (!Number.isFinite(qty) || qty === 0) return;
+            const entry = Number(pos.avg_price || 0);
+            const unreal = (Number.isFinite(currentPrice) && Number.isFinite(entry)) ? (currentPrice - entry) * qty : null;
+            const sym = (pos.symbol || '').toString().toUpperCase();
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span class="pill pill--open">OPEN</span></td>
+                <td>${fmtQty(qty)}</td>
+                <td>${fmt(entry, 4)}</td>
+                <td>—</td>
+                <td>${fmt2(entry * qty)}</td>
+                <td>—</td>
+                <td class="${clsPnl(unreal)}">${unreal === null ? 'n/a' : fmt2(unreal)}</td>
+                <td>—</td>
+                <td>${sym}</td>
+                <td><button class="table-action table-action--danger" data-action="close-position" data-symbol="${sym}">Sell</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        const trips = Array.isArray(data.recent_round_trips) ? data.recent_round_trips : [];
+        trips.forEach((t) => {
+            const tr = document.createElement('tr');
+            const pnl = Number(t.net_pnl || 0);
+            tr.innerHTML = `
+                <td><span class="pill pill--closed">CLOSED</span></td>
+                <td>${fmtQty(t.quantity)}</td>
+                <td>${fmt(t.entry_price, 4)}</td>
+                <td>${fmt(t.exit_price, 4)}</td>
+                <td>${fmt2(t.entry_cost)}</td>
+                <td>${fmt2(t.exit_value)}</td>
+                <td class="${clsPnl(pnl)}">${fmt2(pnl)}</td>
+                <td>${fmt2(t.fees)}</td>
+                <td>${(t.trigger || '').toString().slice(0, 16)}</td>
+                <td>-</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        if (!tbody.children.length) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td class="muted" colspan="10">No trades yet.</td>`;
+            tbody.appendChild(tr);
+        }
+    }
+
+    function bindTradesActions() {
+        const tbody = document.getElementById('tradesTableBody');
+        if (!tbody) return;
+        if (tbody.dataset.actionsBound === '1') return;
+        tbody.dataset.actionsBound = '1';
+
+        tbody.addEventListener('click', async (ev) => {
+            const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-action]') : null;
+            if (!btn) return;
+            if ((btn.dataset.action || '') !== 'close-position') return;
+            const symbol = (btn.dataset.symbol || '').toString().toUpperCase();
+            if (!symbol) return;
+
+            let status = {};
+            try {
+                status = await (await fetch('/api/status')).json();
+            } catch (e) {
+                status = {};
+            }
+            const mode = String((status.execution && status.execution.mode) || 'paper').toLowerCase();
+            const expected = mode === 'live' ? 'LIVE SELL' : 'SELL';
+            const typed = prompt(`Type ${expected} to close ${symbol} position:`);
+            if (typed !== expected) return;
+
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/positions/close', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol, confirm: expected }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    alert(data.detail || 'Close failed');
+                    return;
+                }
+            } catch (e) {
+                alert(`Close failed: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+            }
+            refreshStatus();
+        });
+    }
+
+    function drawBlocksChart(blockedMap) {
+        const canvas = document.getElementById('blocksChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const width = canvas.clientWidth || canvas.width;
+        const height = canvas.clientHeight || canvas.height;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+
+        const entries = Object.entries(blockedMap || {})
+            .map(([k, v]) => [String(k), Number(v || 0)])
+            .filter(([, v]) => v > 0)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 6);
+
+        if (!entries.length) {
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '12px Arial';
+            ctx.fillText('No blocks in last hour', 12, 24);
+            return;
+        }
+
+        const maxV = Math.max(...entries.map(([, v]) => v)) || 1;
+        const padding = 14;
+        const labelW = 120;
+        const barH = Math.max(10, Math.floor((height - padding * 2) / entries.length) - 6);
+        const gap = 6;
+        const chartW = width - padding * 2 - labelW;
+
+        ctx.font = '12px Arial';
+        entries.forEach(([k, v], i) => {
+            const y = padding + i * (barH + gap);
+            ctx.fillStyle = '#9ca3af';
+            ctx.fillText(k, padding, y + barH - 2);
+
+            const w = Math.max(2, (v / maxV) * chartW);
+            ctx.fillStyle = '#2563eb';
+            ctx.fillRect(padding + labelW, y, w, barH);
+            ctx.fillStyle = '#e5e7eb';
+            ctx.fillText(String(v), padding + labelW + w + 6, y + barH - 2);
+        });
+    }
+
+    function renderSignals(signals) {
+        const list = document.getElementById('signalsList');
+        list.innerHTML = '';
+        signals.slice(-5).forEach((signal) => {
+            const item = document.createElement('li');
+            const action = (signal.decision || 'hold').toString().toUpperCase();
+            const price = signal.price !== undefined ? signal.price : 'n/a';
+            const confidence = typeof signal.confidence === 'number' ? signal.confidence : 0;
+            item.textContent = `${action} @ ${price} (conf ${(confidence * 100).toFixed(1)}%)`;
+            list.appendChild(item);
+        });
+    }
+
+    function updateActivityLog(data) {
+        const log = document.getElementById('activityLog');
+        const now = new Date().toLocaleTimeString();
+        let activity = `Monitoring at ${now}...`;
+        if (data.last_decisions && data.last_decisions.length > 0) {
+            const lastDecision = data.last_decisions[data.last_decisions.length - 1];
+            activity = `${now}: ${lastDecision.decision.toUpperCase()} signal generated`;
+        }
+        const item = document.createElement('p');
+        item.className = 'activity-item';
+        item.textContent = activity;
+        log.appendChild(item);
+        // Keep only last 10 items
+        while (log.children.length > 10) {
+            log.removeChild(log.firstChild);
+        }
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function drawPnlChart(pnlSeries) {
+        const canvas = document.getElementById('pnlChart');
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (pnlSeries.length === 0) return;
+
+        // Normalize series to numeric values (API may return objects).
+        const values = pnlSeries
+            .map((p) => (typeof p === 'number' ? p : Number((p && (p.pnl ?? p.value)) ?? 0)))
+            .filter((v) => Number.isFinite(v));
+        if (values.length === 0) return;
+        
+        const width = canvas.width;
+        const height = canvas.height;
+        const padding = 40;
+        const chartWidth = width - 2 * padding;
+        const chartHeight = height - 2 * padding;
+        
+        // Find min and max
+        const minPnl = Math.min(...values);
+        const maxPnl = Math.max(...values);
+        const range = maxPnl - minPnl || 1;
+        
+        // Draw axes
+        ctx.strokeStyle = '#ccc';
+        ctx.beginPath();
+        ctx.moveTo(padding, padding);
+        ctx.lineTo(padding, height - padding);
+        ctx.lineTo(width - padding, height - padding);
+        ctx.stroke();
+        
+        // Draw line
+        ctx.strokeStyle = '#007bff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        values.forEach((pnl, i) => {
+            const denom = Math.max(values.length - 1, 1);
+            const x = padding + (i / denom) * chartWidth;
+            const y = height - padding - ((pnl - minPnl) / range) * chartHeight;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        
+        // Labels
+        ctx.fillStyle = '#000';
+        ctx.font = '12px Arial';
+        ctx.fillText('Days ago', width / 2, height - 10);
+        ctx.save();
+        ctx.translate(10, height / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText('PnL', 0, 0);
+        ctx.restore();
+    }
+
+    function drawEquityChart(series) {
+        const canvas = document.getElementById('equityChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const values = (series || []).map(p => Number(p && p.value)).filter(v => Number.isFinite(v));
+        if (values.length < 2) return;
+
+        const width = canvas.width;
+        const height = canvas.height;
+        const padding = 40;
+        const chartWidth = width - 2 * padding;
+        const chartHeight = height - 2 * padding;
+
+        const minV = Math.min(...values);
+        const maxV = Math.max(...values);
+        const range = (maxV - minV) || 1;
+
+        // Axes
+        ctx.strokeStyle = '#374151';
+        ctx.beginPath();
+        ctx.moveTo(padding, padding);
+        ctx.lineTo(padding, height - padding);
+        ctx.lineTo(width - padding, height - padding);
+        ctx.stroke();
+
+        // Line
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const denom = Math.max(values.length - 1, 1);
+        values.forEach((v, i) => {
+            const x = padding + (i / denom) * chartWidth;
+            const y = height - padding - ((v - minV) / range) * chartHeight;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Labels
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '12px Arial';
+        ctx.fillText('~15m', width / 2, height - 10);
+        ctx.save();
+        ctx.translate(10, height / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText('Equity', 0, 0);
+        ctx.restore();
+    }
+
+    async function refreshStatus() {
+        const response = await fetch('/api/status');
+        if (!response.ok) return;
+        const data = await response.json();
+        updateDashboard(data);
+    }
+
+    // Attach event listeners only if the elements exist (prevent errors when DOM differs)
+    const applyBtn = document.getElementById('applyStrategy');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', async () => {
+            const sel = document.getElementById('strategySelect');
+            const strategy = sel ? sel.value : null;
+            if (!strategy) return;
+            try {
+                const response = await fetch('/api/strategy/set', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({strategy}),
+                });
+                if (!response.ok) return;
+                const data = await response.json();
+                populateStrategies(data.strategy.available, data.strategy.active_strategy);
+            } catch (e) {
+                console.warn('Failed to apply strategy', e);
+            }
+        });
+    }
+
+    const applySymbolBtn = document.getElementById('applySymbol');
+    if (applySymbolBtn) {
+        applySymbolBtn.addEventListener('click', async () => {
+            const sel = document.getElementById('symbolSelect');
+            const symbol = sel ? sel.value : null;
+            if (!symbol) return;
+            applySymbolBtn.disabled = true;
+            try {
+                const response = await fetch('/api/symbol/set', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    alert(data.detail || 'Symbol change failed');
+                    return;
+                }
+                populateSymbols(data.allowed_symbols, data.symbol);
+            } catch (e) {
+                alert(`Symbol change failed: ${e.message}`);
+            } finally {
+                applySymbolBtn.disabled = false;
+            }
+            refreshStatus();
+        });
+    }
+
+    const startBtn = document.getElementById('startTraining');
+    if (startBtn) {
+        startBtn.addEventListener('click', async () => {
+            const button = document.getElementById('startTraining');
+            const status = document.getElementById('trainingStatus');
+            if (button) button.disabled = true;
+            if (status) status.textContent = 'Starting training...';
+            try {
+                const response = await fetch('/api/training/start', { method: 'POST' });
+                if (response.ok) {
+                    if (status) status.textContent = 'Training started successfully!';
+                } else {
+                    const error = await response.json();
+                    if (status) status.textContent = `Error: ${error.detail}`;
+                }
+            } catch (e) {
+                if (status) status.textContent = `Error: ${e.message}`;
+            } finally {
+                if (button) button.disabled = false;
+            }
+        });
+    }
+
+    const toggleSentimentBtn = document.getElementById('toggleSentiment');
+    if (toggleSentimentBtn) {
+        toggleSentimentBtn.addEventListener('click', async () => {
+            const data = await (await fetch('/api/status')).json();
+            const fng = data.fear_greed || {};
+            const enabled = !(fng.enabled !== false);
+            try {
+                await fetch('/api/sentiment/set', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ enabled }),
+                });
+            } catch (e) {
+                console.warn('Failed to toggle sentiment', e);
+            }
+            refreshStatus();
+        });
+    }
+
+    const refreshSentimentBtn = document.getElementById('refreshSentiment');
+    if (refreshSentimentBtn) {
+        refreshSentimentBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/sentiment/refresh', { method: 'POST' });
+            } catch (e) {
+                console.warn('Failed to refresh sentiment', e);
+            }
+            refreshStatus();
+        });
+    }
+
+    const clearRiskPauseBtn = document.getElementById('clearRiskPause');
+    if (clearRiskPauseBtn) {
+        clearRiskPauseBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/risk/clear', { method: 'POST' });
+            } catch (e) {
+                console.warn('Failed to clear risk pause', e);
+            }
+            refreshStatus();
+        });
+    }
+
+    const toggleManualPauseBtn = document.getElementById('toggleManualPause');
+    if (toggleManualPauseBtn) {
+        toggleManualPauseBtn.addEventListener('click', async () => {
+            try {
+                const data = await (await fetch('/api/status')).json();
+                const mp = data.manual_pause || {};
+                const paused = mp.paused === true;
+                if (paused) {
+                    await fetch('/api/trading/pause', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ paused: false }),
+                    });
+                } else {
+                    const reason = prompt('Pause new entries reason (optional):') || '';
+                    const minutesRaw = prompt('Pause minutes (empty = indefinite):') || '';
+                    const minutes = minutesRaw.trim() ? Number(minutesRaw) : null;
+                    await fetch('/api/trading/pause', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ paused: true, reason, minutes }),
+                    });
+                }
+            } catch (e) {
+                console.warn('Failed to toggle manual pause', e);
+            }
+            refreshStatus();
+        });
+    }
+
+    const resetBotBtn = document.getElementById('resetBot');
+    if (resetBotBtn) {
+        resetBotBtn.addEventListener('click', async () => {
+            const typed = prompt('Type RESET to confirm DB wipe + bot reset:');
+            if (typed !== 'RESET') return;
+            resetBotBtn.disabled = true;
+            try {
+                const response = await fetch('/api/admin/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ confirm: 'RESET' }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    alert(data.detail || 'Reset failed');
+                    return;
+                }
+                alert('Reset complete. Reloading dashboard...');
+                window.location.reload();
+            } catch (e) {
+                alert(`Reset failed: ${e.message}`);
+            } finally {
+                resetBotBtn.disabled = false;
+            }
+        });
+    }
+
+    const execToggleBtn = document.getElementById('toggleExecutionMode');
+    if (execToggleBtn) {
+        execToggleBtn.addEventListener('click', async () => {
+            try {
+                const status = await (await fetch('/api/status')).json();
+                const exec = status.execution || {};
+                const mode = String(exec.mode || 'paper').toLowerCase();
+                if (mode === 'live') {
+                    await fetch('/api/execution/mode', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ mode: 'paper' }),
+                    });
+                    refreshStatus();
+                    return;
+                }
+
+                const typed = prompt('Type LIVE to confirm switching to REAL execution:');
+                if (typed !== 'LIVE') return;
+                const resp = await fetch('/api/execution/mode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ mode: 'live', confirm: 'LIVE' }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    const detail = data.detail || 'Switch failed';
+                    const force = confirm(`${detail}\n\nForce enable LIVE anyway?`);
+                    if (!force) return;
+                    const resp2 = await fetch('/api/execution/mode', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ mode: 'live', confirm: 'LIVE', force: true }),
+                    });
+                    const data2 = await resp2.json().catch(() => ({}));
+                    if (!resp2.ok) {
+                        alert(data2.detail || 'Force switch failed');
+                        return;
+                    }
+                }
+            } catch (e) {
+                alert(`Switch failed: ${e.message}`);
+            }
+            refreshStatus();
+        });
+    }
+
+    // Run initialization once DOM is fully parsed to avoid null element access
+    document.addEventListener('DOMContentLoaded', () => {
+        const activeStrategy = (initialStatus.strategy && initialStatus.strategy.active_strategy) || 'moderate';
+        try {
+            populateSymbols(['SOLUSDT', 'ETHUSDT', 'BTCUSDT'], initialStatus.symbol);
+            populateStrategies(initialStrategies, activeStrategy);
+        } catch (e) {
+            console.warn('populateStrategies failed', e);
+        }
+        try {
+            updateDashboard(initialStatus);
+        } catch (e) {
+            console.warn('initial updateDashboard failed', e);
+        }
+        try {
+            bindTradesActions();
+        } catch (e) {
+            /* ignore */
+        }
+        (async () => {
+            try {
+                const resp = await fetch('/api/symbol/list');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                populateSymbols(data.symbols, data.current);
+            } catch (e) {
+                /* ignore */
+            }
+        })();
+        setInterval(refreshStatus, 5000);
+    });
+</script>
+</body>
+</html>

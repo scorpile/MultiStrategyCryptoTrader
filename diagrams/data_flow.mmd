@@ -1,0 +1,32 @@
+sequenceDiagram
+    participant Run as run.py
+    participant Sch as Scheduler
+    participant Ex as Exchange
+    participant Strat as Strategy+ML
+    participant PT as PaperTrading
+    participant St as StateManager
+    participant Ev as Evaluator
+    participant Op as OpenAI Optimizer
+    participant Rep as Reporter
+    participant FE as Frontend
+
+    Run->>Sch: iniciar loop principal
+    loop cada X segundos
+        Sch->>Ex: obtener OHLCV SOL/USDT
+        Ex-->>Sch: datos OHLCV
+        Sch->>Strat: generar señales técnicas + ML
+        Strat-->>Sch: señales con score
+        Sch->>PT: ejecutar paper trading según señales
+        PT-->>St: guardar trades y estado
+    end
+
+    Sch->>Ev: al final del día, calcular métricas
+    Ev-->>St: guardar métricas diarias
+    Ev->>Op: enviar resumen diario (payload)
+    Op-->>St: guardar parámetros ajustados
+
+    Sch->>Rep: generar reportes diario
+    Rep-->>St: opcionalmente guardar metadatos de reporte
+
+    FE->>St: leer estado actual
+    FE->>Rep: leer datos para dashboard

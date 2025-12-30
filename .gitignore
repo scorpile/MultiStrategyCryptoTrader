@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local env files
+.env
+.env.*
+
+# Local runtime outputs
+data/
+state/
+reports/
+backtests/
+server.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Local config (contains secrets)
+src/config/config.yaml

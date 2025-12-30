@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trading Bot Dashboard (Simulation)</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Autonomous Crypto Trading Bot – Simulation Dashboard</h1>
+    </header>
+    <main>
+        <section id="status">
+            <h2>Bot Status</h2>
+            <div id="status-content">
+                <!-- Codex / backend will inject JSON data here -->
+                <p>Status: <span data-field="status">unknown</span></p>
+                <p>Last update: <span data-field="last_update">n/a</span></p>
+            </div>
+        </section>
+
+        <section id="metrics">
+            <h2>Key Metrics (Today)</h2>
+            <ul>
+                <li>PnL: <span data-field="pnl_today">0.0</span></li>
+                <li>Number of trades: <span data-field="trades_today">0</span></li>
+                <li>Win rate: <span data-field="win_rate">0%</span></li>
+                <li>Sharpe (simple): <span data-field="sharpe">0.0</span></li>
+            </ul>
+        </section>
+
+        <section id="probability">
+            <h2>Probability of Consistent Profit</h2>
+            <p>
+                Estimated probability: <span data-field="profit_probability">0%</span>
+            </p>
+            <p>
+                Flag reached (≥ 30%): <span data-field="probability_flag">false</span>
+            </p>
+        </section>
+    </main>
+    <footer>
+        <p>Simulation only – no real trades are executed.</p>
+    </footer>
+</body>
+</html>

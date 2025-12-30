@@ -1,0 +1,18 @@
+# Requirements for the Autonomous Crypto Trading Bot (Simulation)
+# NOTE: This file is a starting point. Codex or the developer can adjust versions as needed.
+
+pandas
+numpy
+scikit-learn
+lightgbm
+sqlparse
+sqlalchemy
+fastapi
+uvicorn
+jinja2
+httpx
+python-dotenv
+pyyaml
+pytest
+# Optional / to be confirmed:
+# python-binance

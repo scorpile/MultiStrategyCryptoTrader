@@ -10,6 +10,10 @@ Paper-first, modular crypto trading bot with a live dashboard, auto-tuning, and 
 
 > Designed to iterate safely in paper mode first. Live trading is optional and always at your own risk.
 
+## Dashboard Preview
+
+![Dashboard Screenshot](docs/dashboard.png)
+
 ---
 
 ## What’s Included

@@ -143,6 +143,14 @@ main {
     margin-bottom: 0.75rem;
 }
 
+.panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -256,6 +264,11 @@ h2, h3 {
 
 .btn-primary:hover {
     background-color: #1d4ed8;
+}
+
+.btn-sm {
+    padding: 0.35rem 0.85rem;
+    font-size: 0.85rem;
 }
 
 .strategy-details p {

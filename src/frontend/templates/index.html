@@ -105,7 +105,10 @@
             <section class="panel">
                 <div class="panel-header">
                     <h2>Trades</h2>
-                    <span class="muted">Open + recent closes</span>
+                    <div class="panel-actions">
+                        <span class="muted">Open + recent closes</span>
+                        <button id="exportTradesCsv" class="btn-primary btn-sm" title="Download simulated trades as CSV">Export CSV</button>
+                    </div>
                 </div>
                 <div class="table-wrap">
                     <table class="trades-table">
@@ -1194,6 +1197,27 @@
         }
         try {
             bindTradesActions();
+        } catch (e) {
+            /* ignore */
+        }
+        try {
+            const exportBtn = document.getElementById('exportTradesCsv');
+            if (exportBtn) {
+                exportBtn.addEventListener('click', () => {
+                    exportBtn.disabled = true;
+                    try {
+                        const a = document.createElement('a');
+                        a.href = '/api/trades/export';
+                        a.style.display = 'none';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                    } finally {
+                        // re-enable quickly; downloads are handled by the browser.
+                        setTimeout(() => { exportBtn.disabled = false; }, 250);
+                    }
+                });
+            }
         } catch (e) {
             /* ignore */
         }

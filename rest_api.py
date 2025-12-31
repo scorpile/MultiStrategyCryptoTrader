@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.responses import Response
 
 from src.ml import feature_engineering
 
@@ -240,6 +244,230 @@ def attach_api_routes(
             return {"manual_pause": scheduler._manual_pause}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Manual pause failed: {str(e)}")
+
+    @router.get("/trades/export")
+    async def export_trades_csv(symbol: Optional[str] = None) -> Response:
+        """Export the simulated trade ledger to CSV for audit/debug."""
+        _require(state_manager, "State manager not configured.")
+
+        sym_filter: Optional[str] = None
+        if symbol:
+            cleaned = str(symbol).strip().upper()
+            if cleaned and cleaned not in {"ALL", "*"}:
+                sym_filter = cleaned
+
+        try:
+            trades = state_manager.get_all_trades(symbol=sym_filter) if sym_filter else state_manager.get_all_trades()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load trades: {str(e)}")
+
+        params: Dict[str, Any] = {}
+        try:
+            params = state_manager.load_parameters() or {}
+        except Exception:
+            params = {}
+
+        initial_cash = 10000.0
+        try:
+            if params.get("paper_initial_cash") is not None:
+                initial_cash = float(params.get("paper_initial_cash") or 0.0) or initial_cash
+        except Exception:
+            pass
+        try:
+            cfg_initial = float((config.get("trading", {}) or {}).get("initial_cash", initial_cash) or initial_cash)
+            if cfg_initial > 0:
+                initial_cash = cfg_initial
+        except Exception:
+            pass
+
+        min_qty_default = 0.0
+        symbol_rules: Dict[str, Any] = {}
+        try:
+            engine = getattr(scheduler, "paper_trading_engine", None) if scheduler is not None else None
+            if engine is not None:
+                min_qty_default = float(getattr(engine, "min_order_quantity", 0.0) or 0.0)
+                symbol_rules = dict(getattr(engine, "symbol_rules", {}) or {})
+        except Exception:
+            min_qty_default = 0.0
+            symbol_rules = {}
+
+        def _clamp_qty(quantity: float, symbol_code: str) -> float:
+            qty = round(float(quantity), 6)
+            min_qty = float(min_qty_default)
+            try:
+                rules = symbol_rules.get(str(symbol_code).upper())
+                if rules is not None:
+                    candidate = float(getattr(rules, "min_qty", 0.0) or 0.0)
+                    if candidate > 0:
+                        min_qty = candidate
+            except Exception:
+                pass
+            if min_qty > 0 and abs(qty) < min_qty:
+                return 0.0
+            return qty
+
+        def _f(value: Any) -> float:
+            try:
+                return float(value or 0.0)
+            except Exception:
+                return 0.0
+
+        def _meta_to_json(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            try:
+                return json.dumps(value, separators=(",", ":"), sort_keys=True)
+            except Exception:
+                return ""
+
+        cash = float(initial_cash)
+        positions: Dict[str, Dict[str, float]] = {}
+        realized_total = 0.0
+
+        buf = io.StringIO(newline="")
+        buf.write("\ufeff")  # Excel-friendly UTF-8 BOM
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "idx",
+                "id",
+                "trade_time",
+                "symbol",
+                "side",
+                "qty_recorded",
+                "qty_applied",
+                "price",
+                "notional_applied",
+                "fee_recorded",
+                "fee_applied",
+                "cash_before",
+                "cash_after",
+                "pos_qty_before",
+                "pos_qty_after",
+                "pos_cost_basis_before",
+                "pos_cost_basis_after",
+                "pnl_db",
+                "pnl_replay",
+                "realized_pnl_total_after",
+                "warning",
+                "trigger",
+                "metadata_json",
+            ]
+        )
+
+        for idx, trade in enumerate(trades, start=1):
+            trade_id = trade.get("id")
+            trade_time = trade.get("trade_time", "")
+            sym = str(trade.get("symbol", "") or "").upper()
+            side = str(trade.get("side", "") or "").upper()
+            qty_recorded = _f(trade.get("quantity"))
+            price = _f(trade.get("price"))
+            fee_recorded = _f(trade.get("fee"))
+            pnl_db = _f(trade.get("pnl"))
+            metadata = trade.get("metadata") or {}
+            meta = metadata if isinstance(metadata, dict) else {}
+
+            cash_before = cash
+            pos = positions.setdefault(sym, {"qty": 0.0, "cost_basis": 0.0})
+            pos_qty_before = float(pos.get("qty", 0.0) or 0.0)
+            pos_cost_before = float(pos.get("cost_basis", 0.0) or 0.0)
+
+            qty_applied = 0.0
+            fee_applied = 0.0
+            notional_applied = 0.0
+            pnl_replay = 0.0
+            warning = ""
+
+            valid = qty_recorded > 0 and price > 0 and side in {"BUY", "SELL"} and bool(sym)
+            if not valid:
+                warning = "ignored_invalid"
+            elif side == "BUY":
+                qty_applied = qty_recorded
+                fee_applied = fee_recorded
+                notional_applied = qty_applied * price
+                cost = notional_applied + fee_applied
+                cash = cash - cost
+
+                new_qty_raw = pos_qty_before + qty_applied
+                pos_qty_after = _clamp_qty(new_qty_raw, sym)
+                pos_cost_after = pos_cost_before + cost
+
+                pos["qty"] = pos_qty_after
+                pos["cost_basis"] = pos_cost_after
+            else:  # SELL
+                available = pos_qty_before
+                cost_basis = pos_cost_before
+                qty_applied = qty_recorded
+                ratio = 1.0
+                if qty_applied > available and available > 0:
+                    ratio = available / qty_applied
+                    qty_applied = available
+                if qty_applied <= 0:
+                    warning = "ignored_sell_zero_qty"
+                else:
+                    if available <= 0:
+                        warning = "sell_without_position"
+                    elif ratio < 1.0:
+                        warning = "sell_capped_to_available"
+                    fee_applied = fee_recorded * ratio
+                    notional_applied = qty_applied * price
+                    proceeds = notional_applied - fee_applied
+                    cash = cash + proceeds
+                    entry_cost = (cost_basis * (qty_applied / available)) if available > 0 else 0.0
+                    pnl_replay = proceeds - entry_cost
+                    realized_total += pnl_replay
+                    pos_qty_after = _clamp_qty(max(0.0, available - qty_applied), sym)
+                    pos_cost_after = max(0.0, cost_basis - entry_cost)
+                    if pos_qty_after == 0.0:
+                        pos_cost_after = 0.0
+                    pos["qty"] = pos_qty_after
+                    pos["cost_basis"] = pos_cost_after
+
+            cash_after = cash
+            pos_qty_after = float(pos.get("qty", 0.0) or 0.0)
+            pos_cost_after = float(pos.get("cost_basis", 0.0) or 0.0)
+
+            trigger = ""
+            try:
+                trigger = str(meta.get("trigger") or (meta.get("decision_metadata") or {}).get("trigger") or "")
+            except Exception:
+                trigger = ""
+
+            writer.writerow(
+                [
+                    idx,
+                    trade_id,
+                    trade_time,
+                    sym,
+                    side,
+                    qty_recorded,
+                    qty_applied,
+                    price,
+                    notional_applied,
+                    fee_recorded,
+                    fee_applied,
+                    cash_before,
+                    cash_after,
+                    pos_qty_before,
+                    pos_qty_after,
+                    pos_cost_before,
+                    pos_cost_after,
+                    pnl_db,
+                    pnl_replay,
+                    realized_total,
+                    warning,
+                    trigger,
+                    _meta_to_json(meta),
+                ]
+            )
+
+        stamp = datetime.utcnow().strftime("%Y-%m-%d_%H%M%S")
+        label = sym_filter or "ALL"
+        filename = f"trades_{label}_{stamp}.csv"
+        headers = {"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+        return Response(content=buf.getvalue().encode("utf-8"), media_type="text/csv; charset=utf-8", headers=headers)
 
     @router.post("/positions/close")
     async def close_position(payload: Dict[str, Any]) -> Dict[str, Any]:

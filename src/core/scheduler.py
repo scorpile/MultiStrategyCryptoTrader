@@ -674,7 +674,24 @@ class Scheduler:
                 total_value = self._estimate_equity_usdt(portfolio, current_price=current_price)
             except Exception:
                 total_value = float(portfolio.get("cash_balance", 0.0) or 0.0)
-            portfolio = {**portfolio, "total_value": total_value}
+            baseline_cash: Optional[float] = None
+            if engine is self.paper_trading_engine:
+                try:
+                    params = self.state_manager.load_parameters() or {}
+                    baseline_cash = float(params.get("paper_initial_cash", self.config.get("trading", {}).get("initial_cash", 10_000.0)))
+                except Exception:
+                    try:
+                        baseline_cash = float(self.config.get("trading", {}).get("initial_cash", 10_000.0))
+                    except Exception:
+                        baseline_cash = 10_000.0
+
+            pnl_since_reset = (float(total_value) - float(baseline_cash)) if baseline_cash is not None else None
+            portfolio = {
+                **portfolio,
+                "total_value": total_value,
+                "initial_cash": baseline_cash,
+                "pnl_since_reset": pnl_since_reset,
+            }
 
             gate = self._evaluate_gate(now=now, indicators=self.last_indicator_payload or {})
 

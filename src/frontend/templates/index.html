@@ -36,6 +36,7 @@
             <div class="kpi-label">Total Value</div>
             <div class="kpi-value"><span data-field="kpi-total-value">0</span></div>
             <div class="kpi-sub muted">Cash <span data-field="kpi-cash">0</span> | Pos <span data-field="kpi-positions">0</span></div>
+            <div class="kpi-sub muted">Start <span data-field="kpi-initial-cash">0</span> | PnL <span data-field="kpi-pnl-since-reset">0</span></div>
         </article>
         <article class="kpi">
             <div class="kpi-label">PnL Today</div>
@@ -334,6 +335,23 @@
                 try { el.innerHTML = html; } catch (e) { /* ignore */ }
             });
         }
+        function _setPnl(selector, value, decimals = 2) {
+            const nodes = document.querySelectorAll(selector);
+            if (!nodes || !nodes.length) return;
+            nodes.forEach((el) => {
+                try {
+                    const num = Number(value);
+                    if (!Number.isFinite(num)) {
+                        el.textContent = 'n/a';
+                        el.classList.remove('pnl-pos', 'pnl-neg');
+                        return;
+                    }
+                    el.textContent = num.toFixed(decimals);
+                    el.classList.remove('pnl-pos', 'pnl-neg');
+                    el.classList.add(num >= 0 ? 'pnl-pos' : 'pnl-neg');
+                } catch (e) { /* ignore */ }
+            });
+        }
 
         // Execution mode (paper/live)
         const exec = data.execution || {};
@@ -381,6 +399,8 @@
         _setText('[data-field="kpi-total-value"]', (portfolio.total_value || 0).toFixed(2));
         _setText('[data-field="kpi-cash"]', (portfolio.cash_balance || 0).toFixed(2));
         _setText('[data-field="kpi-positions"]', portfolio.open_positions ? portfolio.open_positions.length : 0);
+        _setText('[data-field="kpi-initial-cash"]', (portfolio.initial_cash || 0).toFixed(2));
+        _setPnl('[data-field="kpi-pnl-since-reset"]', portfolio.pnl_since_reset, 2);
         const pnlTodayNum = Number(latestMetric.pnl || 0);
         _setText('[data-field="kpi-pnl-today"]', Number.isFinite(pnlTodayNum) ? pnlTodayNum.toFixed(2) : (latestMetric.pnl || 0));
         _setText('[data-field="kpi-trades-today"]', latestMetric.trades_count || 0);

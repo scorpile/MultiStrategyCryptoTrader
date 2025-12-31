@@ -132,6 +132,68 @@ strategy:
       risk_pct_per_trade: 0.005
       stop_atr_multiplier: 2.0
       profit_target_multiplier: 3.0
+    ema_rsi_volume_confirmed:
+      signal_interval: "3m"
+      ema_fast_period: 5
+      ema_slow_period: 20
+      rsi_period: 7
+      rsi_confirm_threshold: 50
+      rsi_exit_threshold: 50
+      require_rsi_rising: true
+      volume_sma_period: 20
+      require_volume_above_sma: true
+      require_close_above_emas: true
+      require_ema_slope: true
+      max_spread_pct: 0.002
+      swing_lookback: 20
+      max_loss_pct: 0.01
+      take_profit_pct: 0.02
+      take_profit_pct_min: 0.015
+      take_profit_pct_max: 0.03
+      risk_pct_per_trade: 0.01
+      trailing_stop_enabled: true
+      trailing_stop_pct: 0.0125
+      trailing_stop_activation_pct: 0.01
+      trailing_stop_min_step_pct: 0.0
+      allow_shorts: false
+    ema_rsi_volume_confirmed_mlrl:
+      signal_interval: "3m"
+      ema_fast_period: 5
+      ema_slow_period: 20
+      rsi_period: 7
+      rsi_confirm_threshold: 50
+      rsi_exit_threshold: 50
+      require_rsi_rising: true
+      volume_sma_period: 20
+      require_volume_above_sma: true
+      require_close_above_emas: true
+      require_ema_slope: true
+      max_spread_pct: 0.002
+      swing_lookback: 20
+      max_loss_pct: 0.01
+      take_profit_pct: 0.02
+      take_profit_pct_min: 0.015
+      take_profit_pct_max: 0.03
+      risk_pct_per_trade: 0.01
+      trailing_stop_enabled: true
+      trailing_stop_pct: 0.0125
+      trailing_stop_activation_pct: 0.01
+      trailing_stop_min_step_pct: 0.0
+      allow_shorts: false
+      ml_filter_enabled: true
+      ml_require_model: false
+      ml_min_probability_up: 0.55
+      ml_min_probability_down: 0.55
+      ml_min_confidence: 0.15
+      ml_confidence_boost: 0.15
+      ml_risk_slope: 0.6
+      ml_risk_multiplier_min: 0.6
+      ml_risk_multiplier_max: 1.4
+      rl_use_weights: true
+      rl_confidence_boost: 0.2
+      rl_score_scale: 0.002
+      rl_risk_multiplier_min: 0.6
+      rl_risk_multiplier_max: 1.4
     bollinger_range:
       bollinger_period: 20
       bollinger_stddev: 2.0

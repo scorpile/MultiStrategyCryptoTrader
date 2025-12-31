@@ -255,6 +255,13 @@ def attach_api_routes(
             cleaned = str(symbol).strip().upper()
             if cleaned and cleaned not in {"ALL", "*"}:
                 sym_filter = cleaned
+        else:
+            try:
+                current = str(getattr(scheduler, "symbol", "") or "").strip().upper()
+                if current:
+                    sym_filter = current
+            except Exception:
+                sym_filter = None
 
         try:
             trades = state_manager.get_all_trades(symbol=sym_filter) if sym_filter else state_manager.get_all_trades()

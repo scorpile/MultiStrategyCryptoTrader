@@ -247,6 +247,13 @@ class Scheduler:
 
             exploration = self._is_exploration_mode()
 
+            trading_cfg = self.config.get("trading", {}) or {}
+            try:
+                spread_bps = float(trading_cfg.get("spread_bps", 0.0) or 0.0)
+            except Exception:
+                spread_bps = 0.0
+            spread_pct = max(0.0, spread_bps) / 10_000.0
+
             # Some strategies prefer a different (less noisy) signal timeframe, while we still monitor 1m
             # for stops/trailing updates via `indicator_payload`.
             signal_payload = indicator_payload
@@ -272,7 +279,12 @@ class Scheduler:
                 signal_payload,
                 ml_context=ml_context,
                 capital=portfolio["cash_balance"],
-                extra_context={"exploration": exploration, "position_qty": position_qty},
+                extra_context={
+                    "exploration": exploration,
+                    "position_qty": position_qty,
+                    "spread_bps": spread_bps,
+                    "spread_pct": spread_pct,
+                },
             )
 
             # Execute at the latest monitored price (1m), but keep the signal interval context for audit/debug.
@@ -478,11 +490,26 @@ class Scheduler:
             if self.is_training:
                 raise RuntimeError("Cannot change symbol while training is running.")
             try:
-                open_positions = self.paper_trading_engine.get_open_positions()
+                snapshot = self.paper_trading_engine.get_portfolio_snapshot()
+                open_positions = snapshot.get("open_positions", []) if isinstance(snapshot, dict) else []
             except Exception:
-                open_positions = []
+                try:
+                    open_positions = self.paper_trading_engine.get_open_positions()
+                except Exception:
+                    open_positions = []
             if open_positions:
-                raise RuntimeError("Cannot change symbol while positions are open. Close positions first.")
+                symbols = []
+                for pos in open_positions:
+                    try:
+                        sym = str(pos.get("symbol", "")).upper()
+                        qty = float(pos.get("quantity", 0.0) or 0.0)
+                    except Exception:
+                        sym = ""
+                        qty = 0.0
+                    if sym and qty != 0.0 and sym not in symbols:
+                        symbols.append(sym)
+                suffix = f" ({', '.join(symbols)})" if symbols else ""
+                raise RuntimeError(f"Cannot change symbol while positions are open{suffix}. Close positions first.")
 
             self.symbol = requested
             self.config.setdefault("general", {})["base_symbol"] = requested
@@ -644,6 +671,15 @@ class Scheduler:
 
             # Reset paper portfolio from (now empty) ledger.
             try:
+                # Always clear in-memory paper state even if DB reset failed or rehydrate errors.
+                try:
+                    self.paper_trading_engine.cash_balance = float(getattr(self.paper_trading_engine, "initial_cash", 0.0) or 0.0)
+                    self.paper_trading_engine.positions = {}
+                    self.paper_trading_engine.realized_pnl = 0.0
+                    self.paper_trading_engine.trade_history = []
+                    self.paper_trading_engine._last_seen_trade_count = 0
+                except Exception:
+                    pass
                 rehydrate = getattr(self.paper_trading_engine, "rehydrate_from_ledger", None)
                 if callable(rehydrate):
                     rehydrate()
@@ -2710,18 +2746,6 @@ class Scheduler:
         if atr_val <= 0 and candle_close > 0:
             atr_val = candle_close * 0.008
 
-        trail_dist = 0.0
-        try:
-            trail_dist = float(pos.get("trail_distance", 0.0) or 0.0)
-        except Exception:
-            trail_dist = 0.0
-        if trail_dist <= 0.0:
-            try:
-                mult = float(cfg.get("trailing_stop_atr_multiplier", cfg.get("stop_atr_multiplier", 2.0)) or 2.0)
-            except Exception:
-                mult = 2.0
-            trail_dist = max(0.0, float(atr_val) * max(0.0, mult))
-
         prev_high = None
         for candidate in (
             pos.get("trail_high"),
@@ -2739,24 +2763,61 @@ class Scheduler:
         prev_high = float(prev_high or 0.0)
         high_now = max(prev_high, float(candle_high or 0.0), float(candle_close or 0.0))
 
-        activated = True
+        trail_pct = 0.0
         try:
-            activation_atr = float(cfg.get("trailing_stop_activation_atr", 0.0) or 0.0)
+            trail_pct = float(cfg.get("trailing_stop_pct", 0.0) or 0.0)
         except Exception:
-            activation_atr = 0.0
-        if activation_atr > 0 and atr_val > 0 and avg_price > 0:
-            activated = high_now >= (avg_price + activation_atr * atr_val)
+            trail_pct = 0.0
+
+        trail_dist = 0.0
+        try:
+            trail_dist = float(pos.get("trail_distance", 0.0) or 0.0)
+        except Exception:
+            trail_dist = 0.0
+        if trail_pct > 0 and high_now > 0:
+            trail_dist = max(0.0, float(high_now) * max(0.0, trail_pct))
+        elif trail_dist <= 0.0:
+            try:
+                mult = float(cfg.get("trailing_stop_atr_multiplier", cfg.get("stop_atr_multiplier", 2.0)) or 2.0)
+            except Exception:
+                mult = 2.0
+            trail_dist = max(0.0, float(atr_val) * max(0.0, mult))
+
+        activated = True
+        activation_pct = 0.0
+        try:
+            activation_pct = float(cfg.get("trailing_stop_activation_pct", 0.0) or 0.0)
+        except Exception:
+            activation_pct = 0.0
+        if activation_pct > 0 and avg_price > 0:
+            activated = high_now >= (avg_price * (1.0 + activation_pct))
+        else:
+            try:
+                activation_atr = float(cfg.get("trailing_stop_activation_atr", 0.0) or 0.0)
+            except Exception:
+                activation_atr = 0.0
+            if activation_atr > 0 and atr_val > 0 and avg_price > 0:
+                activated = high_now >= (avg_price + activation_atr * atr_val)
 
         candidate_stop = (high_now - trail_dist) if (trail_dist > 0 and high_now > 0) else 0.0
         new_stop = float(current_stop)
         if activated and candidate_stop > 0:
             new_stop = max(float(current_stop), float(candidate_stop))
 
+        min_step_pct = 0.0
         try:
-            min_step_atr = float(cfg.get("trailing_stop_min_step_atr", 0.0) or 0.0)
+            min_step_pct = float(cfg.get("trailing_stop_min_step_pct", 0.0) or 0.0)
         except Exception:
-            min_step_atr = 0.0
-        step = float(atr_val) * float(min_step_atr) if (min_step_atr > 0 and atr_val > 0) else 0.0
+            min_step_pct = 0.0
+        step = 0.0
+        if min_step_pct > 0 and candle_close > 0:
+            step = float(candle_close) * float(min_step_pct)
+        else:
+            try:
+                min_step_atr = float(cfg.get("trailing_stop_min_step_atr", 0.0) or 0.0)
+            except Exception:
+                min_step_atr = 0.0
+            step = float(atr_val) * float(min_step_atr) if (min_step_atr > 0 and atr_val > 0) else 0.0
         if step > 0 and (new_stop - float(current_stop)) < step:
             new_stop = float(current_stop)
 

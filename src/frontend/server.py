@@ -187,6 +187,11 @@ def _build_status_payload(
             except Exception:
                 payload["recent_round_trips"] = []
             try:
+                if runtime.get("symbol") and not payload.get("recent_round_trips"):
+                    payload["recent_round_trips_all"] = state_manager.get_recent_round_trips(limit=25)
+            except Exception:
+                payload["recent_round_trips_all"] = []
+            try:
                 payload["readiness_flag"] = state_manager.get_flag("ready_for_micro_live") or {}
             except Exception:
                 payload["readiness_flag"] = {}

@@ -10,6 +10,8 @@ from .moderate import ModerateStrategy
 from .multifactor import MultiFactorStrategy
 from .bollinger_range import BollingerRangeStrategy
 from .ema_rsi_volume import EmaRsiVolumeStrategy
+from .ema_rsi_volume_confirmed import EmaRsiVolumeConfirmedStrategy
+from .ema_rsi_volume_confirmed_mlrl import EmaRsiVolumeConfirmedMLRLStrategy
 from .scalping_aggressive import ScalpingAggressiveStrategy
 from .strategy_base import BaseStrategy
 
@@ -20,6 +22,8 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "multifactor": MultiFactorStrategy,
     "bollinger_range": BollingerRangeStrategy,
     "ema_rsi_volume": EmaRsiVolumeStrategy,
+    "ema_rsi_volume_confirmed": EmaRsiVolumeConfirmedStrategy,
+    "ema_rsi_volume_confirmed_mlrl": EmaRsiVolumeConfirmedMLRLStrategy,
     "scalping_aggressive": ScalpingAggressiveStrategy,
 }
 

@@ -106,7 +106,7 @@
                 <div class="panel-header">
                     <h2>Trades</h2>
                     <div class="panel-actions">
-                        <span class="muted">Open + recent closes</span>
+                        <span class="muted" id="tradesScope">Open + recent closes</span>
                         <button id="exportTradesCsv" class="btn-primary btn-sm" title="Download simulated trades as CSV">Export CSV</button>
                     </div>
                 </div>
@@ -122,6 +122,7 @@
                                 <th>Exit Value</th>
                                 <th>PnL</th>
                                 <th>Fees</th>
+                                <th>Symbol</th>
                                 <th>Tag</th>
                                 <th>Action</th>
                             </tr>
@@ -286,6 +287,7 @@
     const initialStatus = {{ status | tojson | safe }};
     const initialStrategies = {{ strategies | tojson | safe }};
     const _equitySeries = []; // fallback when DB series is empty
+    let _latestStatus = initialStatus || {};
 
     function populateSymbols(symbols, current) {
         const select = document.getElementById('symbolSelect');
@@ -323,6 +325,7 @@
     }
 
     function updateDashboard(data) {
+        _latestStatus = data || {};
         const metrics = Array.isArray(data.recent_metrics) ? data.recent_metrics : [];
         function _setText(selector, text) {
             const nodes = document.querySelectorAll(selector);
@@ -657,6 +660,7 @@
         const tbody = document.getElementById('tradesTableBody');
         if (!tbody) return;
         tbody.innerHTML = '';
+        const scope = document.getElementById('tradesScope');
 
         function fmt(n, d=4) {
             const v = Number(n);
@@ -687,21 +691,32 @@
                 <td><span class="pill pill--open">OPEN</span></td>
                 <td>${fmtQty(qty)}</td>
                 <td>${fmt(entry, 4)}</td>
-                <td>—</td>
+                <td>-</td>
                 <td>${fmt2(entry * qty)}</td>
-                <td>—</td>
+                <td>-</td>
                 <td class="${clsPnl(unreal)}">${unreal === null ? 'n/a' : fmt2(unreal)}</td>
-                <td>—</td>
-                <td>${sym}</td>
+                <td>-</td>
+                <td>${sym || 'n/a'}</td>
+                <td>-</td>
                 <td><button class="table-action table-action--danger" data-action="close-position" data-symbol="${sym}">Sell</button></td>
             `;
             tbody.appendChild(tr);
         });
 
+        const currentSymbol = (data.symbol || '').toString().toUpperCase();
+        const openOther = openPositions.filter((pos) => {
+            const sym = (pos.symbol || '').toString().toUpperCase();
+            return sym && currentSymbol && sym !== currentSymbol;
+        }).length;
+        if (scope) {
+            scope.textContent = openOther > 0 ? `Open + recent closes (open positions in other symbols: ${openOther})` : 'Open + recent closes';
+        }
+
         const trips = Array.isArray(data.recent_round_trips) ? data.recent_round_trips : [];
         trips.forEach((t) => {
             const tr = document.createElement('tr');
             const pnl = Number(t.net_pnl || 0);
+            const sym = (t.symbol || '').toString().toUpperCase();
             tr.innerHTML = `
                 <td><span class="pill pill--closed">CLOSED</span></td>
                 <td>${fmtQty(t.quantity)}</td>
@@ -711,6 +726,7 @@
                 <td>${fmt2(t.exit_value)}</td>
                 <td class="${clsPnl(pnl)}">${fmt2(pnl)}</td>
                 <td>${fmt2(t.fees)}</td>
+                <td>${sym || 'n/a'}</td>
                 <td>${(t.trigger || '').toString().slice(0, 16)}</td>
                 <td>-</td>
             `;
@@ -719,7 +735,7 @@
 
         if (!tbody.children.length) {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td class="muted" colspan="10">No trades yet.</td>`;
+            tr.innerHTML = `<td class="muted" colspan="11">No trades yet.</td>`;
             tbody.appendChild(tr);
         }
     }
@@ -1206,8 +1222,11 @@
                 exportBtn.addEventListener('click', () => {
                     exportBtn.disabled = true;
                     try {
+                        const select = document.getElementById('symbolSelect');
+                        const symbol = (select && select.value) ? String(select.value).toUpperCase() : String((_latestStatus || {}).symbol || '').toUpperCase();
+                        const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
                         const a = document.createElement('a');
-                        a.href = '/api/trades/export';
+                        a.href = `/api/trades/export${query}`;
                         a.style.display = 'none';
                         document.body.appendChild(a);
                         a.click();

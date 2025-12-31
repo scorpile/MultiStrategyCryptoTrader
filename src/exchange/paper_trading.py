@@ -348,6 +348,11 @@ class PaperTradingEngine:
                     )
                     available = float(position.get("qty", 0.0))
                     cost_basis = float(position.get("cost_basis", 0.0) or 0.0)
+                    # Never allow the replay to go short: if the ledger contains SELLs with no
+                    # available inventory (e.g. after a reset, race, or DB corruption),
+                    # skip them so we don't mint cash out of thin air.
+                    if available <= 0.0:
+                        continue
                     qty = qty_record
                     ratio = 1.0
                     if qty > available and available > 0:

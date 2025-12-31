@@ -401,29 +401,34 @@ def attach_api_routes(
                 cost_basis = pos_cost_before
                 qty_applied = qty_recorded
                 ratio = 1.0
-                if qty_applied > available and available > 0:
-                    ratio = available / qty_applied
-                    qty_applied = available
-                if qty_applied <= 0:
-                    warning = "ignored_sell_zero_qty"
+                if available <= 0:
+                    warning = "sell_without_position"
+                    qty_applied = 0.0
+                    fee_applied = 0.0
+                    notional_applied = 0.0
+                    pnl_replay = 0.0
                 else:
-                    if available <= 0:
-                        warning = "sell_without_position"
-                    elif ratio < 1.0:
-                        warning = "sell_capped_to_available"
-                    fee_applied = fee_recorded * ratio
-                    notional_applied = qty_applied * price
-                    proceeds = notional_applied - fee_applied
-                    cash = cash + proceeds
-                    entry_cost = (cost_basis * (qty_applied / available)) if available > 0 else 0.0
-                    pnl_replay = proceeds - entry_cost
-                    realized_total += pnl_replay
-                    pos_qty_after = _clamp_qty(max(0.0, available - qty_applied), sym)
-                    pos_cost_after = max(0.0, cost_basis - entry_cost)
-                    if pos_qty_after == 0.0:
-                        pos_cost_after = 0.0
-                    pos["qty"] = pos_qty_after
-                    pos["cost_basis"] = pos_cost_after
+                    if qty_applied > available:
+                        ratio = available / qty_applied
+                        qty_applied = available
+                    if qty_applied <= 0:
+                        warning = "ignored_sell_zero_qty"
+                    else:
+                        if ratio < 1.0:
+                            warning = "sell_capped_to_available"
+                        fee_applied = fee_recorded * ratio
+                        notional_applied = qty_applied * price
+                        proceeds = notional_applied - fee_applied
+                        cash = cash + proceeds
+                        entry_cost = cost_basis * (qty_applied / available) if available > 0 else 0.0
+                        pnl_replay = proceeds - entry_cost
+                        realized_total += pnl_replay
+                        pos_qty_after = _clamp_qty(max(0.0, available - qty_applied), sym)
+                        pos_cost_after = max(0.0, cost_basis - entry_cost)
+                        if pos_qty_after == 0.0:
+                            pos_cost_after = 0.0
+                        pos["qty"] = pos_qty_after
+                        pos["cost_basis"] = pos_cost_after
 
             cash_after = cash
             pos_qty_after = float(pos.get("qty", 0.0) or 0.0)

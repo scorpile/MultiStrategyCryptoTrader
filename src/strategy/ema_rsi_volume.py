@@ -40,13 +40,15 @@ def _clamp01(value: float) -> float:
 class EmaRsiVolumeStrategy(BaseStrategy):
     """Trend scalping: EMA cross + RSI confirmation + volume spike."""
 
-    description = "EMA(5/20) cross + RSI(7) confirmation + volume spike (spot long-only)."
+    description = "EMA(5/20) cross + RSI(7) confirmation + volume spike (spot long-only, 5m signals + 1m risk monitoring)."
 
     def name(self) -> str:
         return "ema_rsi_volume"
 
     def config_schema(self) -> Dict[str, Any]:
         return {
+            # Signal timeframe (scheduler uses this to fetch indicators)
+            "signal_interval": "5m",
             "ema_fast_period": 5,
             "ema_slow_period": 20,
             "rsi_period": 7,
@@ -61,6 +63,12 @@ class EmaRsiVolumeStrategy(BaseStrategy):
             "risk_pct_per_trade": 0.005,  # 0.5% equity risk per trade
             "stop_atr_multiplier": 2.0,
             "profit_target_multiplier": 3.0,
+            # Trailing stop (scheduler-managed, paper mode)
+            "trailing_stop_enabled": True,
+            "trailing_stop_atr_multiplier": 2.0,
+            "trailing_stop_activation_atr": 1.0,  # start trailing once +1 ATR in profit
+            "trailing_stop_min_step_atr": 0.25,  # move stop only if it advances by >= 0.25 ATR
+            "trailing_stop_ignore_take_profit": True,  # let winners run; exits via trail/strategy sell
             # Optional ML filter/boost
             "ml_filter_enabled": False,
             "ml_min_probability_up": 0.55,

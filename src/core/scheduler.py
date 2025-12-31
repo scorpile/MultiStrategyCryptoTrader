@@ -103,6 +103,7 @@ class Scheduler:
         self._last_gate_tune_event_id: int = 0
         self._last_gate_tune_at: Optional[datetime] = None
         self._backtest_state: Dict[str, Any] = {}
+        self._paper_trailing_state: Dict[str, Any] = {}
         self.execution_mode: str = "paper"
 
         # Restore runtime toggles/snapshots from persisted parameters (best-effort).
@@ -139,6 +140,8 @@ class Scheduler:
                 self._manual_pause = params["manual_pause"]
             if isinstance(params.get("backtest_last"), dict):
                 self._backtest_state = params["backtest_last"]
+            if isinstance(params.get("paper_trailing_state"), dict):
+                self._paper_trailing_state = params["paper_trailing_state"]
         except Exception:
             pass
 
@@ -208,13 +211,26 @@ class Scheduler:
             indicators_log = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in indicator_payload.items() if k in ['close', 'rsi', 'ema_fast', 'ema_slow', 'atr', 'volume_sma', 'macd_histogram', 'bollinger_width']}
             logging.info(f"Indicators: {indicators_log}")
 
+            price_for_equity = float(indicator_payload.get("closes", [0.0])[-1] or 0.0)
+
+            # Ensure the engine state is in sync before evaluating stops/TP/trailing.
+            try:
+                self._get_portfolio_snapshot(engine, current_price=price_for_equity)
+            except Exception:
+                pass
+
+            # Re-apply persisted paper trailing stop state (survives restarts).
+            try:
+                self._apply_paper_trailing_state(engine=engine)
+            except Exception:
+                pass
+
             # Check for stop-loss/take-profit triggers
             stop_loss_decisions = self._check_stop_loss_take_profit(indicator_payload)
             if stop_loss_decisions:
-                self._execute_decisions(stop_loss_decisions, now=now)
+                self._execute_decisions(stop_loss_decisions, now=now, indicators=indicator_payload)
                 logging.info("Executed stop-loss/take-profit: %s", stop_loss_decisions)
 
-            price_for_equity = float(indicator_payload.get("closes", [0.0])[-1] or 0.0)
             portfolio = self._get_portfolio_snapshot(engine, current_price=price_for_equity)
             # Keep circuit breaker up-to-date even when dashboard is closed.
             try:
@@ -230,16 +246,60 @@ class Scheduler:
                 position_qty = 0.0
 
             exploration = self._is_exploration_mode()
+
+            # Some strategies prefer a different (less noisy) signal timeframe, while we still monitor 1m
+            # for stops/trailing updates via `indicator_payload`.
+            signal_payload = indicator_payload
+            signal_interval = self.interval
+            try:
+                strategy = self.strategy_manager.get_active_strategy()
+                signal_interval = self._get_strategy_signal_interval(strategy)
+                if signal_interval and str(signal_interval) != str(self.interval):
+                    ohlcv_signal = self.exchange_client.fetch_ohlcv(self.symbol, signal_interval, limit=200)
+                    if ohlcv_signal:
+                        try:
+                            self._cache_recent_ohlcv(symbol=self.symbol, interval=signal_interval, candles=ohlcv_signal)
+                        except Exception:
+                            pass
+                        ohlcv_signal = self._strip_open_candle(ohlcv_signal, now=now)
+                        if ohlcv_signal:
+                            signal_payload = self._build_indicator_payload(ohlcv_signal)
+            except Exception:
+                signal_payload = indicator_payload
+                signal_interval = self.interval
+
             decisions = self.strategy_manager.generate_decisions(
-                indicator_payload,
+                signal_payload,
                 ml_context=ml_context,
                 capital=portfolio["cash_balance"],
                 extra_context={"exploration": exploration, "position_qty": position_qty},
             )
+
+            # Execute at the latest monitored price (1m), but keep the signal interval context for audit/debug.
+            if signal_interval and str(signal_interval) != str(self.interval):
+                for d in decisions:
+                    if d.get("decision") not in {"buy", "sell"}:
+                        continue
+                    meta = d.get("metadata") or {}
+                    try:
+                        meta = dict(meta) if isinstance(meta, dict) else {}
+                    except Exception:
+                        meta = {}
+                    meta.setdefault("signal_interval", str(signal_interval))
+                    meta.setdefault("signal_price", d.get("price"))
+                    meta["execution_price"] = float(price_for_equity)
+                    d["metadata"] = meta
+                    d["price"] = float(price_for_equity)
             if not self.validation_mode:
                 self._execute_decisions(decisions, now=now, indicators=indicator_payload)
             else:
                 self._record_blocked_decisions(decisions, now=now, reason="validation_mode")
+
+            # Update trailing stop levels after any position changes.
+            try:
+                self._maybe_update_paper_trailing_stop(now=now, indicators=indicator_payload)
+            except Exception:
+                pass
             self.latest_ml_context = ml_context
             self.last_decisions = decisions
             logging.info(
@@ -2393,6 +2453,8 @@ class Scheduler:
         strategy = self.strategy_manager.get_active_strategy()
         stop_loss_pct = strategy.config.get("stop_loss_pct", 0.05)
         take_profit_pct = strategy.config.get("take_profit_pct", 0.10)
+        trailing_enabled = bool(strategy.config.get("trailing_stop_enabled", False))
+        ignore_take_profit = trailing_enabled and bool(strategy.config.get("trailing_stop_ignore_take_profit", False))
         
         for pos in open_positions:
             symbol = pos["symbol"]
@@ -2415,7 +2477,7 @@ class Scheduler:
                         "reasons": [f"Stop-loss triggered at {stop_price:.4f} (low {low_price:.4f})"],
                         "metadata": {"trigger": "stop_loss", "avg_price": avg_price, "stop_loss": stop_price, "take_profit": take_price},
                     })
-                elif high_price >= take_price:
+                elif (not ignore_take_profit) and high_price >= take_price:
                     decisions.append({
                         "decision": "sell",
                         "price": take_price,
@@ -2456,3 +2518,273 @@ class Scheduler:
         for price in values[1:]:
             ema_values.append((price - ema_values[-1]) * multiplier + ema_values[-1])
         return ema_values
+
+    # ------------------------------------------------------------------ #
+    # Multi-timeframe signals + trailing stop (paper)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_iso_z(value: Any) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _get_strategy_signal_interval(self, strategy: Any) -> str:
+        cfg = getattr(strategy, "config", {}) or {}
+        raw = cfg.get("signal_interval") or cfg.get("signal_timeframe") or cfg.get("signal_time_frame")
+        if raw is None:
+            return str(self.interval)
+        try:
+            interval = str(raw).strip().lower().replace(" ", "")
+        except Exception:
+            return str(self.interval)
+        if not interval:
+            return str(self.interval)
+        if interval.isdigit():
+            interval = f"{interval}m"
+        if len(interval) < 2:
+            return str(self.interval)
+        if not any(interval.endswith(suf) for suf in ("m", "h", "d", "w")):
+            return str(self.interval)
+        try:
+            int(interval[:-1])
+        except Exception:
+            return str(self.interval)
+        return interval
+
+    def _strip_open_candle(self, candles: List[Dict[str, Any]], *, now: datetime) -> List[Dict[str, Any]]:
+        """Return candles without the currently-open bar (for stable multi-minute signals)."""
+        if not isinstance(candles, list) or len(candles) < 2:
+            return candles
+        last = candles[-1] or {}
+        close_time = self._parse_iso_z(last.get("close_time"))
+        if close_time is None:
+            return candles
+        now_aware = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+        if close_time > now_aware:
+            return candles[:-1]
+        return candles
+
+    def _apply_paper_trailing_state(self, *, engine: Any) -> None:
+        if engine is not self.paper_trading_engine:
+            return
+        sym = str(self.symbol or "").upper()
+        if not sym:
+            return
+        if not isinstance(self._paper_trailing_state, dict):
+            self._paper_trailing_state = {}
+        state = self._paper_trailing_state.get(sym)
+        if not isinstance(state, dict):
+            return
+
+        positions_map = getattr(engine, "positions", None)
+        pos = positions_map.get(sym) if isinstance(positions_map, dict) else None
+        if not isinstance(pos, dict):
+            self._paper_trailing_state.pop(sym, None)
+            try:
+                self.state_manager.save_parameters({"paper_trailing_state": self._paper_trailing_state})
+            except Exception:
+                pass
+            return
+
+        try:
+            qty = float(pos.get("qty", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        min_qty = self._get_min_qty_for_symbol(engine, sym)
+        if qty <= 0.0 or (min_qty > 0 and abs(qty) < min_qty):
+            self._paper_trailing_state.pop(sym, None)
+            try:
+                self.state_manager.save_parameters({"paper_trailing_state": self._paper_trailing_state})
+            except Exception:
+                pass
+            return
+
+        stop_loss = state.get("stop_loss")
+        if stop_loss is not None:
+            try:
+                sl = float(stop_loss)
+                if sl > 0:
+                    pos["stop_loss"] = sl
+            except Exception:
+                pass
+        high_watermark = state.get("high_watermark")
+        if high_watermark is not None:
+            try:
+                pos["trail_high"] = float(high_watermark)
+            except Exception:
+                pass
+        trail_distance = state.get("trail_distance")
+        if trail_distance is not None:
+            try:
+                pos["trail_distance"] = float(trail_distance)
+            except Exception:
+                pass
+        last_candle_time = state.get("last_candle_time")
+        if last_candle_time:
+            try:
+                pos["trail_last_candle_time"] = str(last_candle_time)
+            except Exception:
+                pass
+
+    def _maybe_update_paper_trailing_stop(self, *, now: datetime, indicators: Dict[str, Any]) -> None:
+        """Update trailing stop-loss for the active symbol (paper mode only)."""
+        engine = self._get_active_engine()
+        if engine is not self.paper_trading_engine:
+            return
+
+        strategy = self.strategy_manager.get_active_strategy()
+        cfg = getattr(strategy, "config", {}) or {}
+        if not bool(cfg.get("trailing_stop_enabled", False)):
+            return
+
+        sym = str(self.symbol or "").upper()
+        if not sym:
+            return
+
+        positions_map = getattr(engine, "positions", None)
+        pos = positions_map.get(sym) if isinstance(positions_map, dict) else None
+        if not isinstance(pos, dict):
+            if isinstance(self._paper_trailing_state, dict) and sym in self._paper_trailing_state:
+                self._paper_trailing_state.pop(sym, None)
+                try:
+                    self.state_manager.save_parameters({"paper_trailing_state": self._paper_trailing_state})
+                except Exception:
+                    pass
+            return
+
+        try:
+            qty = float(pos.get("qty", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        min_qty = self._get_min_qty_for_symbol(engine, sym)
+        if qty <= 0.0 or (min_qty > 0 and abs(qty) < min_qty):
+            if isinstance(self._paper_trailing_state, dict) and sym in self._paper_trailing_state:
+                self._paper_trailing_state.pop(sym, None)
+                try:
+                    self.state_manager.save_parameters({"paper_trailing_state": self._paper_trailing_state})
+                except Exception:
+                    pass
+            return
+
+        try:
+            avg_price = float(pos.get("avg_price", 0.0) or 0.0)
+        except Exception:
+            avg_price = 0.0
+        try:
+            current_stop = float(pos.get("stop_loss", 0.0) or 0.0)
+        except Exception:
+            current_stop = 0.0
+
+        ohlcv = indicators.get("ohlcv") or []
+        candle = None
+        if isinstance(ohlcv, list) and ohlcv:
+            candle = ohlcv[-1]
+            if len(ohlcv) >= 2:
+                close_time = self._parse_iso_z((ohlcv[-1] or {}).get("close_time"))
+                now_aware = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+                if close_time is not None and close_time > now_aware:
+                    candle = ohlcv[-2]
+        candle = candle or {}
+        candle_time = str(candle.get("open_time") or candle.get("close_time") or "")
+        candle_high = float(candle.get("high", 0.0) or 0.0)
+        candle_close = float(candle.get("close", 0.0) or 0.0)
+        if candle_close <= 0:
+            candle_close = float((indicators.get("closes") or [0.0])[-1] or 0.0)
+
+        if not isinstance(self._paper_trailing_state, dict):
+            self._paper_trailing_state = {}
+        state = self._paper_trailing_state.get(sym) if isinstance(self._paper_trailing_state.get(sym), dict) else {}
+        last_candle_seen = str(state.get("last_candle_time") or pos.get("trail_last_candle_time") or "")
+        if candle_time and candle_time == last_candle_seen:
+            return
+
+        atr_series = indicators.get("atr") or []
+        try:
+            atr_val = float(atr_series[-1]) if atr_series else 0.0
+        except Exception:
+            atr_val = 0.0
+        if atr_val <= 0 and candle_close > 0:
+            atr_val = candle_close * 0.008
+
+        trail_dist = 0.0
+        try:
+            trail_dist = float(pos.get("trail_distance", 0.0) or 0.0)
+        except Exception:
+            trail_dist = 0.0
+        if trail_dist <= 0.0:
+            try:
+                mult = float(cfg.get("trailing_stop_atr_multiplier", cfg.get("stop_atr_multiplier", 2.0)) or 2.0)
+            except Exception:
+                mult = 2.0
+            trail_dist = max(0.0, float(atr_val) * max(0.0, mult))
+
+        prev_high = None
+        for candidate in (
+            pos.get("trail_high"),
+            state.get("high_watermark"),
+            avg_price,
+            candle_close,
+        ):
+            try:
+                v = float(candidate or 0.0)
+                if v > 0:
+                    prev_high = v
+                    break
+            except Exception:
+                continue
+        prev_high = float(prev_high or 0.0)
+        high_now = max(prev_high, float(candle_high or 0.0), float(candle_close or 0.0))
+
+        activated = True
+        try:
+            activation_atr = float(cfg.get("trailing_stop_activation_atr", 0.0) or 0.0)
+        except Exception:
+            activation_atr = 0.0
+        if activation_atr > 0 and atr_val > 0 and avg_price > 0:
+            activated = high_now >= (avg_price + activation_atr * atr_val)
+
+        candidate_stop = (high_now - trail_dist) if (trail_dist > 0 and high_now > 0) else 0.0
+        new_stop = float(current_stop)
+        if activated and candidate_stop > 0:
+            new_stop = max(float(current_stop), float(candidate_stop))
+
+        try:
+            min_step_atr = float(cfg.get("trailing_stop_min_step_atr", 0.0) or 0.0)
+        except Exception:
+            min_step_atr = 0.0
+        step = float(atr_val) * float(min_step_atr) if (min_step_atr > 0 and atr_val > 0) else 0.0
+        if step > 0 and (new_stop - float(current_stop)) < step:
+            new_stop = float(current_stop)
+
+        if candle_close > 0 and new_stop >= candle_close:
+            new_stop = candle_close * (1.0 - 0.001)
+
+        changed = False
+        if new_stop > 0 and (float(current_stop) <= 0 or new_stop > float(current_stop) + 1e-9):
+            pos["stop_loss"] = float(new_stop)
+            changed = True
+        pos["trail_high"] = float(high_now)
+        pos["trail_distance"] = float(trail_dist)
+        if candle_time:
+            pos["trail_last_candle_time"] = candle_time
+
+        state_changed = changed or (high_now > float(state.get("high_watermark") or 0.0) + 1e-9) or (trail_dist != float(state.get("trail_distance") or 0.0))
+        if not candle_time:
+            candle_time = now.isoformat() + "Z"
+        if state_changed:
+            self._paper_trailing_state[sym] = {
+                "stop_loss": float(pos.get("stop_loss") or 0.0),
+                "high_watermark": float(high_now),
+                "trail_distance": float(trail_dist),
+                "last_candle_time": candle_time,
+                "updated_at": now.isoformat() + "Z",
+                "strategy": self.strategy_manager.get_active_strategy_name(),
+            }
+            try:
+                self.state_manager.save_parameters({"paper_trailing_state": self._paper_trailing_state})
+            except Exception:
+                pass

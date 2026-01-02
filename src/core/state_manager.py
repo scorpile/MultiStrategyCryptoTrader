@@ -42,6 +42,7 @@ class StateManager:
                     trade_time TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL,
+                    position_side TEXT,
                     quantity REAL NOT NULL,
                     price REAL NOT NULL,
                     fee REAL DEFAULT 0,
@@ -51,6 +52,10 @@ class StateManager:
                 );
                 """
             )
+            try:
+                conn.execute("ALTER TABLE simulated_trades ADD COLUMN position_side TEXT;")
+            except Exception:
+                pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_metrics (
@@ -180,9 +185,39 @@ class StateManager:
             conn.execute("DELETE FROM execution_positions;")
             conn.execute("DELETE FROM system_parameters;")
 
+    def wipe_db_file(self) -> None:
+        """Best-effort: delete the SQLite file (and WAL/SHM) to guarantee a fresh start."""
+        try:
+            if self.db_path.exists():
+                self.db_path.unlink()
+        except Exception:
+            pass
+        for suffix in ("-wal", "-shm"):
+            try:
+                extra = self.db_path.with_name(self.db_path.name + suffix)
+                if extra.exists():
+                    extra.unlink()
+            except Exception:
+                pass
+
     def ensure_execution_tables(self) -> None:
         """Best-effort: ensure live execution tables exist."""
         self.init_db()
+
+    def count_execution_positions(self, *, mode: Optional[str] = None, symbol: Optional[str] = None) -> int:
+        """Return number of rows in execution_positions (optionally filtered)."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if mode:
+            clauses.append("mode = ?")
+            params.append(mode)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._get_connection() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM execution_positions {where};", params).fetchone()
+        return int(row[0] if row else 0)
 
     # ------------------------------------------------------------------ #
     # Parameters
@@ -222,6 +257,7 @@ class StateManager:
             "trade_time": trade_payload.get("trade_time", self._utcnow()),
             "symbol": trade_payload["symbol"],
             "side": trade_payload["side"],
+            "position_side": (str(trade_payload.get("position_side") or trade_payload.get("side") or "long")).lower(),
             "quantity": float(trade_payload["quantity"]),
             "price": float(trade_payload["price"]),
             "fee": float(trade_payload.get("fee", 0.0)),
@@ -233,9 +269,9 @@ class StateManager:
             conn.execute(
                 """
                 INSERT INTO simulated_trades (
-                    trade_time, symbol, side, quantity, price, fee, pnl, metadata, created_at
+                    trade_time, symbol, side, position_side, quantity, price, fee, pnl, metadata, created_at
                 ) VALUES (
-                    :trade_time, :symbol, :side, :quantity, :price, :fee, :pnl, :metadata, :created_at
+                    :trade_time, :symbol, :side, :position_side, :quantity, :price, :fee, :pnl, :metadata, :created_at
                 );
                 """,
                 normalized,
@@ -763,10 +799,11 @@ class StateManager:
         symbol: Optional[str] = None,
         max_lookback_trades: int = 2000,
     ) -> List[Dict[str, Any]]:
-        """Return recent closed 'round trips' (BUY -> SELL) including entry/exit costs and net PnL.
+        """Return recent closed 'round trips' including entry/exit costs, triggers, and net PnL.
 
         Notes:
-        - This is best-effort and uses FIFO lots.
+        - Uses FIFO lots per symbol.
+        - Supports both long (BUY then SELL) and short (SELL then BUY) flows.
         - Net PnL accounts for both entry + exit fees.
         """
         lookback = max(int(max_lookback_trades), int(limit) * 20, 200)
@@ -774,8 +811,9 @@ class StateManager:
         if not trades:
             return []
 
-        trades_sorted = list(reversed(trades))  # oldest->newest
-        lots: List[Dict[str, Any]] = []
+        trades_sorted = list(reversed(trades))  # oldest -> newest
+        long_lots: Dict[str, List[Dict[str, Any]]] = {}
+        short_lots: Dict[str, List[Dict[str, Any]]] = {}
         trips: List[Dict[str, Any]] = []
 
         def _f(value: Any) -> float:
@@ -784,6 +822,30 @@ class StateManager:
             except Exception:
                 return 0.0
 
+        def _parse_meta(meta_raw: Any) -> tuple[Dict[str, Any], str, str]:
+            meta = meta_raw or {}
+            if isinstance(meta_raw, str):
+                try:
+                    meta = json.loads(meta_raw)
+                except Exception:
+                    meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            decision_meta = meta.get("decision_metadata") or {}
+            trigger = meta.get("trigger") or decision_meta.get("trigger") or ""
+            reason = meta.get("reason") or decision_meta.get("reason") or ""
+            if not reason:
+                try:
+                    reasons = meta.get("reasons") or decision_meta.get("reasons") or []
+                    if isinstance(reasons, Iterable) and not isinstance(reasons, (str, bytes)):
+                        first = next(iter(reasons), "")
+                        reason = str(first or "")
+                    elif reasons:
+                        reason = str(reasons)
+                except Exception:
+                    reason = ""
+            return meta, str(trigger or ""), str(reason or "")
+
         for trade in trades_sorted:
             sym = str(trade.get("symbol", "")).upper()
             side = str(trade.get("side", "")).upper()
@@ -791,29 +853,121 @@ class StateManager:
             price = _f(trade.get("price"))
             fee = _f(trade.get("fee"))
             ts = trade.get("trade_time") or trade.get("timestamp") or trade.get("created_at") or ""
-            meta = trade.get("metadata") or {}
+            meta, trigger, reason = _parse_meta(trade.get("metadata"))
 
             if qty <= 0 or price <= 0 or side not in {"BUY", "SELL"}:
                 continue
 
-            if side == "BUY":
-                lots.append({"qty": qty, "price": price, "fee": fee, "time": ts, "symbol": sym})
+            if side == "SELL":
+                # Close longs first; remainder opens/extends a short.
+                remaining = qty
+                lots = long_lots.setdefault(sym, [])
+                entry_qty = 0.0
+                entry_notional = 0.0
+                entry_fee = 0.0
+                entry_time = None
+                entry_prices: list[float] = []
+                entry_triggers: list[str] = []
+                entry_reasons: list[str] = []
+
+                while remaining > 1e-12 and lots:
+                    lot = lots[0]
+                    if lot.get("symbol") != sym:
+                        lots.pop(0)
+                        continue
+                    lot_qty = float(lot.get("qty", 0.0) or 0.0)
+                    if lot_qty <= 1e-12:
+                        lots.pop(0)
+                        continue
+                    use_qty = min(lot_qty, remaining)
+                    if entry_time is None:
+                        entry_time = lot.get("time")
+
+                    entry_qty += use_qty
+                    lot_price = float(lot.get("price", 0.0) or 0.0)
+                    entry_notional += use_qty * lot_price
+                    entry_prices.append(lot_price)
+                    if lot.get("trigger"):
+                        entry_triggers.append(str(lot.get("trigger")))
+                    if lot.get("reason"):
+                        entry_reasons.append(str(lot.get("reason")))
+
+                    lot_fee_rem = float(lot.get("fee", 0.0) or 0.0)
+                    alloc_fee = (lot_fee_rem * (use_qty / lot_qty)) if lot_qty > 0 else 0.0
+                    entry_fee += alloc_fee
+
+                    lot["qty"] = lot_qty - use_qty
+                    lot["fee"] = lot_fee_rem - alloc_fee
+                    remaining -= use_qty
+                    if float(lot.get("qty", 0.0) or 0.0) <= 1e-12:
+                        lots.pop(0)
+
+                if entry_qty > 0:
+                    entry_avg_price = entry_notional / max(entry_qty, 1e-12)
+                    exit_fee = fee * (entry_qty / qty) if qty > 0 else fee
+                    entry_cost = (entry_avg_price * entry_qty) + entry_fee
+                    exit_value = (price * entry_qty) - exit_fee
+                    gross_pnl = (price - entry_avg_price) * entry_qty
+                    total_fees = entry_fee + exit_fee
+                    net_pnl = gross_pnl - total_fees
+
+                    trips.append(
+                        {
+                            "symbol": sym,
+                            "quantity": round(entry_qty, 6),
+                            "direction": "long",
+                            "entry_time": entry_time or "",
+                            "exit_time": ts,
+                            "entry_price": entry_avg_price,
+                            "exit_price": price,
+                            "entry_price_min": min(entry_prices) if entry_prices else entry_avg_price,
+                            "entry_price_max": max(entry_prices) if entry_prices else entry_avg_price,
+                            "exit_price_min": price,
+                            "exit_price_max": price,
+                            "entry_cost": entry_cost,
+                            "exit_value": exit_value,
+                            "gross_pnl": gross_pnl,
+                            "fees": total_fees,
+                            "net_pnl": net_pnl,
+                            "trigger": trigger,
+                            "entry_trigger": entry_triggers[0] if entry_triggers else "",
+                            "exit_trigger": trigger,
+                            "entry_reason": entry_reasons[0] if entry_reasons else (entry_triggers[0] if entry_triggers else ""),
+                            "exit_reason": reason or trigger,
+                        }
+                    )
+
+                # Any remaining opens/extends a short position.
+                if remaining > 1e-12:
+                    short_lots.setdefault(sym, []).append(
+                        {
+                            "qty": remaining,
+                            "price": price,
+                            "fee": fee * (remaining / qty) if qty > 0 else fee,
+                            "time": ts,
+                            "symbol": sym,
+                            "trigger": trigger,
+                            "reason": reason or trigger,
+                        }
+                    )
                 continue
 
-            # SELL: consume lots
+            # side == BUY
             remaining = qty
+            lots = short_lots.setdefault(sym, [])
             entry_qty = 0.0
             entry_notional = 0.0
             entry_fee = 0.0
             entry_time = None
+            entry_prices: list[float] = []
+            entry_triggers: list[str] = []
+            entry_reasons: list[str] = []
 
             while remaining > 1e-12 and lots:
                 lot = lots[0]
                 if lot.get("symbol") != sym:
-                    # Different symbol lot; keep FIFO per symbol by skipping.
                     lots.pop(0)
                     continue
-
                 lot_qty = float(lot.get("qty", 0.0) or 0.0)
                 if lot_qty <= 1e-12:
                     lots.pop(0)
@@ -823,7 +977,13 @@ class StateManager:
                     entry_time = lot.get("time")
 
                 entry_qty += use_qty
-                entry_notional += use_qty * float(lot.get("price", 0.0) or 0.0)
+                lot_price = float(lot.get("price", 0.0) or 0.0)
+                entry_notional += use_qty * lot_price
+                entry_prices.append(lot_price)
+                if lot.get("trigger"):
+                    entry_triggers.append(str(lot.get("trigger")))
+                if lot.get("reason"):
+                    entry_reasons.append(str(lot.get("reason")))
 
                 lot_fee_rem = float(lot.get("fee", 0.0) or 0.0)
                 alloc_fee = (lot_fee_rem * (use_qty / lot_qty)) if lot_qty > 0 else 0.0
@@ -832,46 +992,59 @@ class StateManager:
                 lot["qty"] = lot_qty - use_qty
                 lot["fee"] = lot_fee_rem - alloc_fee
                 remaining -= use_qty
-
                 if float(lot.get("qty", 0.0) or 0.0) <= 1e-12:
                     lots.pop(0)
 
-            if entry_qty <= 0:
-                continue
+            if entry_qty > 0:
+                entry_avg_price = entry_notional / max(entry_qty, 1e-12)
+                exit_fee = fee * (entry_qty / qty) if qty > 0 else fee
+                entry_cost = (entry_avg_price * entry_qty) - entry_fee  # short entry = proceeds after fee
+                exit_value = (price * entry_qty) + exit_fee  # cash out to close short
+                gross_pnl = (entry_avg_price - price) * entry_qty
+                total_fees = entry_fee + exit_fee
+                net_pnl = gross_pnl - total_fees
 
-            entry_avg_price = entry_notional / max(entry_qty, 1e-12)
-            exit_fee = fee * (entry_qty / qty) if qty > 0 else fee
-            entry_cost = (entry_avg_price * entry_qty) + entry_fee
-            exit_value = (price * entry_qty) - exit_fee
-            gross_pnl = (price - entry_avg_price) * entry_qty
-            total_fees = entry_fee + exit_fee
-            net_pnl = gross_pnl - total_fees
+                trips.append(
+                    {
+                        "symbol": sym,
+                        "quantity": round(entry_qty, 6),
+                        "direction": "short",
+                        "entry_time": entry_time or "",
+                        "exit_time": ts,
+                        "entry_price": entry_avg_price,
+                        "exit_price": price,
+                        "entry_price_min": min(entry_prices) if entry_prices else entry_avg_price,
+                        "entry_price_max": max(entry_prices) if entry_prices else entry_avg_price,
+                        "exit_price_min": price,
+                        "exit_price_max": price,
+                        "entry_cost": entry_cost,
+                        "exit_value": exit_value,
+                        "gross_pnl": gross_pnl,
+                        "fees": total_fees,
+                        "net_pnl": net_pnl,
+                        "trigger": trigger,
+                        "entry_trigger": entry_triggers[0] if entry_triggers else "",
+                        "exit_trigger": trigger,
+                        "entry_reason": entry_reasons[0] if entry_reasons else (entry_triggers[0] if entry_triggers else ""),
+                        "exit_reason": reason or trigger,
+                    }
+                )
 
-            trigger = None
-            try:
-                trigger = meta.get("trigger") or (meta.get("decision_metadata") or {}).get("trigger")
-            except Exception:
-                trigger = None
+            # Any remaining opens/extends a long position.
+            if remaining > 1e-12:
+                long_lots.setdefault(sym, []).append(
+                    {
+                        "qty": remaining,
+                        "price": price,
+                        "fee": fee * (remaining / qty) if qty > 0 else fee,
+                        "time": ts,
+                        "symbol": sym,
+                        "trigger": trigger,
+                        "reason": reason or trigger,
+                    }
+                )
 
-            trips.append(
-                {
-                    "symbol": sym,
-                    "quantity": round(entry_qty, 6),
-                    "entry_time": entry_time or "",
-                    "exit_time": ts,
-                    "entry_price": entry_avg_price,
-                    "exit_price": price,
-                    "entry_cost": entry_cost,
-                    "exit_value": exit_value,
-                    "gross_pnl": gross_pnl,
-                    "fees": total_fees,
-                    "net_pnl": net_pnl,
-                    "trigger": trigger or "",
-                }
-            )
-
-        # newest first
-        trips = list(reversed(trips))
+        trips = list(reversed(trips))  # newest first
         return trips[: int(limit)]
 
     def get_all_trades(

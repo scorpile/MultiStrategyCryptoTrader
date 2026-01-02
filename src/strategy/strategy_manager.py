@@ -98,8 +98,16 @@ class StrategyManager:
         return payload
 
     def get_status_snapshot(self) -> Dict[str, Any]:
+        active_cfg: Dict[str, Any] = {}
+        try:
+            active_cfg = dict(self.active_strategy.config or {})
+        except Exception:
+            active_cfg = {}
+        strategy_overrides = self.runtime_state.get("strategies", {}).get(self.active_strategy_name, {})
         return {
             "active_strategy": self.active_strategy_name,
+            "active_config": active_cfg,
+            "active_overrides": strategy_overrides,
             "available": self.get_available_strategies(),
             "ml": self.runtime_state.get("ml", {}),
             "rl": self.runtime_state.get("rl", {}),

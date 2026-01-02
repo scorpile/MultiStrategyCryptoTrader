@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import threading
 from datetime import date, datetime, time as time_cls, timedelta
@@ -80,6 +81,7 @@ class Scheduler:
         self.last_ml_training_summary: Dict[str, Any] = {}
         self._last_ml_training_date: Optional[date] = None
         self.validation_mode: bool = False  # Live validation without real trades
+        self._last_symbol_sync: Optional[datetime] = None
         self.training_progress: int = 0
         self.is_training: bool = False
         self._last_buy_time: Optional[datetime] = None
@@ -192,7 +194,10 @@ class Scheduler:
     def run_trading_cycle_once(self, now: datetime) -> None:
         """Single trading iteration: fetch data, compute signals, simulate trades."""
         with self._admin_lock:
+            self._sync_symbol_from_state()
             self._update_manual_pause(now=now)
+            trading_cfg = self.config.get("trading", {}) or {}
+            strategy_only_signals = bool(trading_cfg.get("strategy_only_signals", True))
             ohlcv = self.exchange_client.fetch_ohlcv(self.symbol, self.interval, limit=200)
             if not ohlcv:
                 logging.warning("Received empty OHLCV data; skipping cycle.")
@@ -225,11 +230,12 @@ class Scheduler:
             except Exception:
                 pass
 
-            # Check for stop-loss/take-profit triggers
-            stop_loss_decisions = self._check_stop_loss_take_profit(indicator_payload)
-            if stop_loss_decisions:
-                self._execute_decisions(stop_loss_decisions, now=now, indicators=indicator_payload)
-                logging.info("Executed stop-loss/take-profit: %s", stop_loss_decisions)
+            # Optional scheduler-managed exits (disabled by default to keep strategy-only evaluation).
+            if not strategy_only_signals:
+                stop_loss_decisions = self._check_stop_loss_take_profit(indicator_payload)
+                if stop_loss_decisions:
+                    self._execute_decisions(stop_loss_decisions, now=now, indicators=indicator_payload)
+                    logging.info("Executed stop-loss/take-profit: %s", stop_loss_decisions)
 
             portfolio = self._get_portfolio_snapshot(engine, current_price=price_for_equity)
             # Keep circuit breaker up-to-date even when dashboard is closed.
@@ -247,7 +253,6 @@ class Scheduler:
 
             exploration = self._is_exploration_mode()
 
-            trading_cfg = self.config.get("trading", {}) or {}
             try:
                 spread_bps = float(trading_cfg.get("spread_bps", 0.0) or 0.0)
             except Exception:
@@ -307,11 +312,12 @@ class Scheduler:
             else:
                 self._record_blocked_decisions(decisions, now=now, reason="validation_mode")
 
-            # Update trailing stop levels after any position changes.
-            try:
-                self._maybe_update_paper_trailing_stop(now=now, indicators=indicator_payload)
-            except Exception:
-                pass
+            # Update trailing stop levels after any position changes (scheduler-managed).
+            if not strategy_only_signals:
+                try:
+                    self._maybe_update_paper_trailing_stop(now=now, indicators=indicator_payload)
+                except Exception:
+                    pass
             self.latest_ml_context = ml_context
             self.last_decisions = decisions
             logging.info(
@@ -476,6 +482,56 @@ class Scheduler:
         except Exception:
             pass
 
+    def _apply_symbol_change(self, symbol: str, *, persist: bool) -> None:
+        """Centralized symbol setter used by UI actions and background sync."""
+        self.symbol = symbol
+        self.config.setdefault("general", {})["base_symbol"] = symbol
+        if persist:
+            try:
+                self.state_manager.save_parameters({"active_symbol": symbol})
+            except Exception:
+                pass
+        try:
+            self._refresh_symbol_rules(symbol)
+        except Exception:
+            pass
+        # Force fresh indicators/decisions for the new symbol.
+        self.last_indicator_payload = {}
+        self.last_indicator_update = None
+        self.last_decisions = []
+        self._last_symbol_sync = datetime.utcnow()
+
+    def _sync_symbol_from_state(self) -> None:
+        """Keep the runtime symbol aligned with persisted active_symbol."""
+        now = datetime.utcnow()
+        if self._last_symbol_sync and (now - self._last_symbol_sync).total_seconds() < 2:
+            return
+        if self.execution_mode == "live" or self.is_training:
+            self._last_symbol_sync = now
+            return
+        try:
+            params = self.state_manager.load_parameters()
+            active_symbol = params.get("active_symbol")
+            normalized = self._normalize_symbol(active_symbol)
+        except Exception:
+            self._last_symbol_sync = now
+            return
+        self._last_symbol_sync = now
+        if normalized and normalized != str(self.symbol or "").upper():
+            try:
+                open_positions = self.paper_trading_engine.get_open_positions()
+                if open_positions:
+                    logging.warning(
+                        "Persisted active_symbol=%s differs from runtime=%s but positions are open; skipping sync.",
+                        normalized,
+                        self.symbol,
+                    )
+                    return
+            except Exception:
+                pass
+            logging.info("Syncing active symbol from state: %s -> %s", self.symbol, normalized)
+            self._apply_symbol_change(normalized, persist=False)
+
     def set_symbol(self, symbol: str) -> Dict[str, Any]:
         """Switch active trading symbol (paper only) and persist selection."""
         with self._admin_lock:
@@ -511,23 +567,7 @@ class Scheduler:
                 suffix = f" ({', '.join(symbols)})" if symbols else ""
                 raise RuntimeError(f"Cannot change symbol while positions are open{suffix}. Close positions first.")
 
-            self.symbol = requested
-            self.config.setdefault("general", {})["base_symbol"] = requested
-
-            try:
-                self.state_manager.save_parameters({"active_symbol": requested})
-            except Exception:
-                pass
-
-            try:
-                self._refresh_symbol_rules(requested)
-            except Exception:
-                pass
-
-            # Force a fresh indicator refresh for the new symbol.
-            self.last_indicator_payload = {}
-            self.last_indicator_update = None
-            self.last_decisions = []
+            self._apply_symbol_change(requested, persist=True)
             return {"symbol": self.symbol, "allowed_symbols": allowed}
 
     def close_position(self, *, symbol: Optional[str] = None) -> Dict[str, Any]:
@@ -621,6 +661,13 @@ class Scheduler:
         with self._admin_lock:
             logging.warning("ADMIN RESET requested: wiping DB + runtime state.")
 
+            # Preserve current selections to reapply after reset.
+            preserved_symbol = str(self.symbol or "")
+            try:
+                preserved_state = json.loads(json.dumps(getattr(self.strategy_manager, "runtime_state", {})))
+            except Exception:
+                preserved_state = None
+
             # Reset scheduler runtime flags/caches (in-memory).
             self.validation_mode = False
             self.is_training = False
@@ -651,7 +698,26 @@ class Scheduler:
             # Wipe persisted runtime data.
             try:
                 self.state_manager.reset_db()
+                # Ensure the file is fully recreated to avoid ghost rows.
+                try:
+                    self.state_manager.wipe_db_file()
+                except Exception:
+                    pass
                 self.state_manager.init_db()
+                # Validate that no positions/trades remain after reset.
+                try:
+                    leftover_trades = self.state_manager.count_total_trades()
+                    leftover_exec_pos = self.state_manager.count_execution_positions()
+                    if leftover_trades or leftover_exec_pos:
+                        logging.warning(
+                            "Post-reset validation found lingering rows (trades=%s, exec_positions=%s); forcing another wipe.",
+                            leftover_trades,
+                            leftover_exec_pos,
+                        )
+                        self.state_manager.reset_db()
+                        self.state_manager.init_db()
+                except Exception:
+                    logging.exception("Post-reset validation failed; continuing.")
             except Exception:
                 logging.exception("Failed to reset SQLite database.")
 
@@ -668,6 +734,16 @@ class Scheduler:
                 self.strategy_manager.refresh_runtime_state()
             except Exception:
                 logging.exception("Failed to refresh strategy runtime state after reset.")
+
+            # Reapply preserved strategy runtime state (active strategy + overrides).
+            try:
+                if preserved_state:
+                    cfg_path = getattr(self.strategy_manager, "config_path", None)
+                    if cfg_path:
+                        Path(cfg_path).write_text(json.dumps(preserved_state, indent=2), encoding="utf-8")
+                        self.strategy_manager.refresh_runtime_state()
+            except Exception:
+                logging.exception("Failed to restore strategy selection after reset.")
 
             # Reset paper portfolio from (now empty) ledger.
             try:
@@ -686,11 +762,19 @@ class Scheduler:
             except Exception:
                 logging.exception("Failed to rehydrate paper portfolio after reset.")
 
+            # Restore selected symbol and persist it.
+            try:
+                if preserved_symbol:
+                    self._apply_symbol_change(self._normalize_symbol(preserved_symbol), persist=True)
+            except Exception:
+                logging.exception("Failed to restore symbol after reset.")
+
             return {"status": "ok", "reset_at": datetime.utcnow().isoformat() + "Z"}
 
     def get_runtime_snapshot(self) -> Dict[str, Any]:
         """Expose metrics for UI/API endpoints."""
         with self._admin_lock:
+            self._sync_symbol_from_state()
             now = datetime.utcnow()
             self._update_manual_pause(now=now)
             self._update_fear_greed(now)
@@ -1032,6 +1116,7 @@ class Scheduler:
                 continue
 
             if action == "buy":
+                # If there's an existing short (quantity < 0), allow BUY to close/reduce it.
                 if (self._manual_pause or {}).get("paused"):
                     self._record_decision_event(decision, now=now, executed=False, blocked_reason="manual_pause", extra={"manual_pause": self._manual_pause})
                     continue
@@ -1080,6 +1165,21 @@ class Scheduler:
 
                 sized_qty = float(getattr(sized, "quantity", 0.0)) if sized is not None else size_hint
                 order_metadata = dict(metadata)
+                # Ensure trigger info is carried into trade metadata for later tooltips.
+                if "trigger" not in order_metadata:
+                    try:
+                        first_reason = (decision.get("reasons") or [None])[0]
+                    except Exception:
+                        first_reason = None
+                    if first_reason:
+                        order_metadata["trigger"] = str(first_reason)
+                if "reason" not in order_metadata:
+                    try:
+                        first_reason = (decision.get("reasons") or [None])[0]
+                    except Exception:
+                        first_reason = None
+                    if first_reason:
+                        order_metadata["reason"] = str(first_reason)
                 # Attach market context for execution realism (spread/dynamic slippage).
                 try:
                     atr_series = (indicators or {}).get("atr") or []
@@ -1196,30 +1296,51 @@ class Scheduler:
                 available_qty = 0.0
             min_qty = self._get_min_qty_for_symbol(engine, self.symbol)
 
-            # No shorts supported: ignore SELL signals when flat.
-            if available_qty <= 0.0 or (min_qty > 0 and available_qty < min_qty):
+            entry_type = str((metadata or {}).get("entry_type") or "").lower()
+            short_entry = entry_type == "short" and self.execution_mode != "live"
+
+            # If flat and this is a short entry, allow it; otherwise require an open long.
+            if not short_entry and (available_qty <= 0.0 or (min_qty > 0 and available_qty < min_qty)):
                 logging.info("Ignoring SELL signal (no open position).")
                 self._record_decision_event(decision, now=now, executed=False, blocked_reason="no_position")
                 continue
 
             # Cap to available position size to avoid over-sell.
             sell_qty = float(size_hint) if size_hint > 0 else available_qty
-            sell_qty = min(sell_qty, available_qty)
-            # If we'd leave an untradeable dust remainder, just close fully.
-            if min_qty > 0 and (available_qty - sell_qty) < min_qty:
-                sell_qty = available_qty
-            if min_qty > 0 and sell_qty < min_qty:
-                logging.info("Ignoring SELL signal (position dust below min order qty).")
-                self._record_decision_event(decision, now=now, executed=False, blocked_reason="no_position")
-                continue
+            if short_entry and available_qty <= 0.0:
+                sell_qty = float(size_hint) if size_hint > 0 else float(risk_cfg.get("default_short_qty", 0.001) or 0.001)
+            else:
+                sell_qty = min(sell_qty, available_qty)
+                # If we'd leave an untradeable dust remainder, just close fully.
+                if min_qty > 0 and (available_qty - sell_qty) < min_qty:
+                    sell_qty = available_qty
+                if min_qty > 0 and sell_qty < min_qty:
+                    logging.info("Ignoring SELL signal (position dust below min order qty).")
+                    self._record_decision_event(decision, now=now, executed=False, blocked_reason="no_position")
+                    continue
 
             if sell_qty > 0:
+                order_meta = dict(metadata)
+                if "trigger" not in order_meta:
+                    try:
+                        first_reason = (decision.get("reasons") or [None])[0]
+                    except Exception:
+                        first_reason = None
+                    if first_reason:
+                        order_meta["trigger"] = str(first_reason)
+                if "reason" not in order_meta:
+                    try:
+                        first_reason = (decision.get("reasons") or [None])[0]
+                    except Exception:
+                        first_reason = None
+                    if first_reason:
+                        order_meta["reason"] = str(first_reason)
                 order = SimulatedOrder(
                     symbol=self.symbol,
                     side="SELL",
                     quantity=float(sell_qty),
                     price=float(price),
-                    metadata=metadata,
+                    metadata=order_meta,
                 )
                 try:
                     record = engine.submit_order(order)
@@ -1273,7 +1394,14 @@ class Scheduler:
             if self._last_buy_time is None:
                 self._last_buy_time = self.state_manager.get_last_trade_time(symbol=self.symbol, side="BUY")
             if self._last_buy_time is not None:
-                elapsed = (now - self._last_buy_time).total_seconds()
+                last_buy = self._last_buy_time
+                try:
+                    # Normalize to naive so subtraction does not mix aware/naive datetimes.
+                    if last_buy.tzinfo is not None:
+                        last_buy = last_buy.replace(tzinfo=None)
+                except Exception:
+                    pass
+                elapsed = (now - last_buy).total_seconds()
                 if elapsed < cooldown_seconds:
                     logging.info("BUY throttled by cooldown (%.1fs < %.1fs).", elapsed, cooldown_seconds)
                     return True
@@ -1338,6 +1466,13 @@ class Scheduler:
     def _is_exploration_mode(self) -> bool:
         trading_cfg = self.config.get("trading", {}) or {}
         if not bool(trading_cfg.get("exploration_enabled", False)):
+            return False
+        try:
+            strategy = self.strategy_manager.get_active_strategy()
+            strat_cfg = getattr(strategy, "config", {}) or {}
+            if not bool(strat_cfg.get("allow_exploration", False)):
+                return False
+        except Exception:
             return False
         target = int(trading_cfg.get("exploration_until_total_trades", 50) or 50)
         if target <= 0:

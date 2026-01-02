@@ -186,6 +186,7 @@ class PaperTradingEngine:
         record["trade_pnl"] = trade_pnl
         record["cumulative_pnl"] = self.realized_pnl
         record["quantity"] = float(fill_qty)
+        record["position_side"] = "long" if str(record.get("side", "")).upper() == "BUY" else "short"
         record["metadata"] = {
             **(metadata or {}),
             "execution": exec_meta,
@@ -218,6 +219,7 @@ class PaperTradingEngine:
             qty = self._clamp_dust_quantity(float(data.get("qty", 0.0) or 0.0), symbol=symbol)
             if qty != 0.0:
                 data["qty"] = qty
+                direction = "long" if qty > 0 else "short"
                 positions.append(
                     {
                         "symbol": symbol,
@@ -225,6 +227,7 @@ class PaperTradingEngine:
                         "avg_price": float(data.get("avg_price", 0.0)),
                         "stop_loss": data.get("stop_loss"),
                         "take_profit": data.get("take_profit"),
+                        "direction": direction,
                     }
                 )
         return positions
@@ -403,18 +406,46 @@ class PaperTradingEngine:
     # ------------------------------------------------------------------ #
     def _handle_buy(self, quantity: float, price: float, symbol: str, *, metadata: Optional[Dict[str, Any]] = None) -> float:
         """Add to (or open) a long position and update cash balance."""
+        position = self.positions.setdefault(
+            symbol,
+            {"qty": 0.0, "avg_price": 0.0, "cost_basis": 0.0, "stop_loss": None, "take_profit": None},
+        )
+        qty_now = float(position.get("qty", 0.0))
         cost = quantity * price + price * quantity * self.fee_rate
+
+        # Closing/reducing a short position
+        if qty_now < 0:
+            available = abs(qty_now)
+            close_qty = min(quantity, available)
+            if close_qty <= 0:
+                return 0.0
+            buy_cost = close_qty * price + price * close_qty * self.fee_rate
+            if buy_cost > self.cash_balance:
+                raise OrderRejected("insufficient_cash", {"need": float(buy_cost), "cash": float(self.cash_balance)})
+            self.cash_balance -= buy_cost
+            entry_price = float(position.get("avg_price", 0.0) or 0.0)
+            cost_basis = float(position.get("cost_basis", 0.0) or 0.0)
+            entry_cost = entry_price * close_qty
+            pnl_net = (entry_price - price) * close_qty  # short: profit if price falls
+            self.realized_pnl += pnl_net
+            new_qty = qty_now + close_qty  # qty_now is negative
+            position["qty"] = self._clamp_dust_quantity(new_qty, symbol=symbol)
+            position["cost_basis"] = max(0.0, cost_basis - entry_cost)
+            if float(position.get("qty", 0.0)) == 0.0:
+                position["avg_price"] = 0.0
+                position["cost_basis"] = 0.0
+                position["stop_loss"] = None
+                position["take_profit"] = None
+            return pnl_net
+
+        # Opening/adding to a long position
         if cost > self.cash_balance:
             raise OrderRejected(
                 "insufficient_cash",
                 {"need": float(cost), "cash": float(self.cash_balance), "qty": float(quantity), "price": float(price), "symbol": str(symbol).upper()},
             )
         self.cash_balance -= cost
-        position = self.positions.setdefault(
-            symbol,
-            {"qty": 0.0, "avg_price": 0.0, "cost_basis": 0.0, "stop_loss": None, "take_profit": None},
-        )
-        new_qty = float(position.get("qty", 0.0)) + quantity
+        new_qty = qty_now + quantity
         if new_qty <= 0:
             position["qty"] = 0.0
             position["avg_price"] = 0.0
@@ -443,6 +474,23 @@ class PaperTradingEngine:
             {"qty": 0.0, "avg_price": 0.0, "cost_basis": 0.0, "stop_loss": None, "take_profit": None},
         )
         available_qty = float(position.get("qty", 0.0))
+        # Open/increase short if flat or already short
+        if available_qty <= 0:
+            proceeds = quantity * price - price * quantity * self.fee_rate
+            self.cash_balance += proceeds
+            prev_qty = available_qty
+            prev_avg = float(position.get("avg_price", 0.0) or 0.0)
+            prev_cost = float(position.get("cost_basis", 0.0) or 0.0)
+            new_qty = prev_qty - quantity  # more negative
+            new_abs = abs(new_qty)
+            prev_abs = abs(prev_qty)
+            avg_price = ((prev_avg * prev_abs) + (price * quantity)) / max(new_abs, 1e-12)
+            position["avg_price"] = avg_price
+            position["qty"] = self._clamp_dust_quantity(new_qty, symbol=symbol)
+            position["cost_basis"] = prev_cost + proceeds  # store proceeds as cost basis for symmetry
+            return 0.0
+
+        # Reduce an existing long position
         if quantity > available_qty:
             raise OrderRejected(
                 "no_position",

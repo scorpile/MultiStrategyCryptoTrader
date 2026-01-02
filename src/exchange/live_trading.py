@@ -128,6 +128,7 @@ class LiveTradingEngine:
                 "avg_price": float(pos.get("avg_price", 0.0) or 0.0),
                 "stop_loss": pos.get("stop_loss"),
                 "take_profit": pos.get("take_profit"),
+                "direction": "long" if qty > 0 else "short",
             }
         ]
 

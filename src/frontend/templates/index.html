@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -115,6 +115,7 @@
                         <thead>
                             <tr>
                                 <th>Status</th>
+                                <th>Side</th>
                                 <th>Qty</th>
                                 <th>Entry</th>
                                 <th>Exit</th>
@@ -129,6 +130,10 @@
                         </thead>
                         <tbody id="tradesTableBody"></tbody>
                     </table>
+                </div>
+                <div class="strategy-params" id="strategyParams">
+                    <h4>Strategy Parameters</h4>
+                    <ul class="metrics-list" id="strategyParamsList"></ul>
                 </div>
             </section>
         </section>
@@ -282,6 +287,20 @@
         </section>
     </section>
 </main>
+
+<div id="triggersDialog" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" onclick="hideTriggersDialog()">×</button>
+        <h3>Trade Signals</h3>
+        <p><strong>Symbol:</strong> <span data-field="dlg-symbol"></span></p>
+        <p><strong>Side:</strong> <span data-field="dlg-side"></span></p>
+        <p><strong>Entry signal:</strong></p>
+        <div class="muted" data-field="dlg-entry"></div>
+        <p><strong>Exit signal:</strong></p>
+        <div class="muted" data-field="dlg-exit"></div>
+        <button class="btn-primary" onclick="hideTriggersDialog()">Close</button>
+    </div>
+</div>
 
 <script>
     const initialStatus = {{ status | tojson | safe }};
@@ -530,7 +549,7 @@
             });
             if (changedKeys.length) {
                 const li = document.createElement('li');
-                li.textContent = `Keys: ${changedKeys.slice(0, 8).join(', ')}${changedKeys.length > 8 ? '…' : ''}`;
+                li.textContent = `Keys: ${changedKeys.slice(0, 8).join(', ')}${changedKeys.length > 8 ? 'â€¦' : ''}`;
                 atReasonsEl.appendChild(li);
             }
         }
@@ -661,6 +680,8 @@
         if (!tbody) return;
         tbody.innerHTML = '';
         const scope = document.getElementById('tradesScope');
+        const paramsList = document.getElementById('strategyParamsList');
+        if (paramsList) paramsList.innerHTML = '';
 
         function fmt(n, d=4) {
             const v = Number(n);
@@ -686,9 +707,11 @@
             const entry = Number(pos.avg_price || 0);
             const unreal = (Number.isFinite(currentPrice) && Number.isFinite(entry)) ? (currentPrice - entry) * qty : null;
             const sym = (pos.symbol || '').toString().toUpperCase();
+            const dir = (pos.direction || (qty >= 0 ? 'long' : 'short')).toString().toUpperCase();
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><span class="pill pill--open">OPEN</span></td>
+                <td>${dir}</td>
                 <td>${fmtQty(qty)}</td>
                 <td>${fmt(entry, 4)}</td>
                 <td>-</td>
@@ -717,26 +740,59 @@
             const tr = document.createElement('tr');
             const pnl = Number(t.net_pnl || 0);
             const sym = (t.symbol || '').toString().toUpperCase();
+            const dir = (t.direction || 'long').toString().toUpperCase();
+            const entryRange = t.entry_price_min && t.entry_price_max && t.entry_price_min !== t.entry_price_max
+                ? `${fmt(t.entry_price_min, 4)}-${fmt(t.entry_price_max, 4)}`
+                : fmt(t.entry_price, 4);
+            const exitRange = t.exit_price_min && t.exit_price_max && t.exit_price_min !== t.exit_price_max
+                ? `${fmt(t.exit_price_min, 4)}-${fmt(t.exit_price_max, 4)}`
+                : fmt(t.exit_price, 4);
+            const esc = (txt) => String(txt || '').replace(/"/g, "'");
+            const entryTip = esc(t.entry_reason || t.entry_trigger || "entry");
+            const exitTip = esc(t.exit_reason || t.exit_trigger || "exit");
+            const entryFull = esc(t.entry_reason || t.entry_trigger || "entry");
+            const exitFull = esc(t.exit_reason || t.exit_trigger || "exit");
             tr.innerHTML = `
                 <td><span class="pill pill--closed">CLOSED</span></td>
+                <td>${dir}</td>
                 <td>${fmtQty(t.quantity)}</td>
-                <td>${fmt(t.entry_price, 4)}</td>
-                <td>${fmt(t.exit_price, 4)}</td>
+                <td title="${entryTip}">${entryRange}</td>
+                <td title="${exitTip}">${exitRange}</td>
                 <td>${fmt2(t.entry_cost)}</td>
                 <td>${fmt2(t.exit_value)}</td>
                 <td class="${clsPnl(pnl)}">${fmt2(pnl)}</td>
                 <td>${fmt2(t.fees)}</td>
                 <td>${sym || 'n/a'}</td>
                 <td>${(t.trigger || '').toString().slice(0, 16)}</td>
-                <td>-</td>
+                <td><button class="table-action" data-action="see-triggers" data-entry="${entryTip}" data-exit="${exitTip}" data-entryfull="${entryFull}" data-exitfull="${exitFull}" data-symbol="${sym}" data-side="${dir}">See</button></td>
             `;
             tbody.appendChild(tr);
         });
 
         if (!tbody.children.length) {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td class="muted" colspan="11">No trades yet.</td>`;
+            tr.innerHTML = `<td class="muted" colspan="12">No trades yet.</td>`;
             tbody.appendChild(tr);
+        }
+
+        // Render strategy parameters below the table for quick context.
+        if (paramsList) {
+            const strat = data.strategy || {};
+            const cfg = strat.active_config || {};
+            const entries = [];
+            const allowShorts = cfg.allow_shorts === true;
+            entries.push(`Allow shorts: ${allowShorts ? 'Yes' : 'No'}`);
+            if (cfg.signal_interval) entries.push(`Signal TF: ${cfg.signal_interval}`);
+            if (cfg.stop_loss_pct !== undefined) entries.push(`Stop loss: ${(Number(cfg.stop_loss_pct) * 100 || 0).toFixed(2)}%`);
+            if (cfg.take_profit_pct !== undefined) entries.push(`Take profit: ${(Number(cfg.take_profit_pct) * 100 || 0).toFixed(2)}%`);
+            if (cfg.trailing_stop_enabled !== undefined) entries.push(`Trailing stop: ${cfg.trailing_stop_enabled ? 'On' : 'Off'}`);
+            if (cfg.trailing_stop_pct !== undefined) entries.push(`Trail pct: ${(Number(cfg.trailing_stop_pct) * 100 || 0).toFixed(2)}%`);
+            if (cfg.risk_pct_per_trade !== undefined) entries.push(`Risk/trade: ${(Number(cfg.risk_pct_per_trade) * 100 || 0).toFixed(2)}%`);
+            entries.slice(0, 10).forEach((txt) => {
+                const li = document.createElement('li');
+                li.textContent = txt;
+                paramsList.appendChild(li);
+            });
         }
     }
 
@@ -749,39 +805,51 @@
         tbody.addEventListener('click', async (ev) => {
             const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-action]') : null;
             if (!btn) return;
-            if ((btn.dataset.action || '') !== 'close-position') return;
-            const symbol = (btn.dataset.symbol || '').toString().toUpperCase();
-            if (!symbol) return;
+            const action = (btn.dataset.action || '').toLowerCase();
+            if (action === 'close-position') {
+                const symbol = (btn.dataset.symbol || '').toString().toUpperCase();
+                if (!symbol) return;
 
-            let status = {};
-            try {
-                status = await (await fetch('/api/status')).json();
-            } catch (e) {
-                status = {};
-            }
-            const mode = String((status.execution && status.execution.mode) || 'paper').toLowerCase();
-            const expected = mode === 'live' ? 'LIVE SELL' : 'SELL';
-            const typed = prompt(`Type ${expected} to close ${symbol} position:`);
-            if (typed !== expected) return;
-
-            btn.disabled = true;
-            try {
-                const resp = await fetch('/api/positions/close', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ symbol, confirm: expected }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (!resp.ok) {
-                    alert(data.detail || 'Close failed');
-                    return;
+                let status = {};
+                try {
+                    status = await (await fetch('/api/status')).json();
+                } catch (e) {
+                    status = {};
                 }
-            } catch (e) {
-                alert(`Close failed: ${e.message}`);
-            } finally {
-                btn.disabled = false;
+                const mode = String((status.execution && status.execution.mode) || 'paper').toLowerCase();
+                const expected = mode === 'live' ? 'LIVE SELL' : 'SELL';
+                const typed = prompt(`Type ${expected} to close ${symbol} position:`);
+                if (typed !== expected) return;
+
+                btn.disabled = true;
+                try {
+                    const resp = await fetch('/api/positions/close', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ symbol, confirm: expected }),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        alert(data.detail || 'Close failed');
+                        return;
+                    }
+                } catch (e) {
+                    alert(`Close failed: ${e.message}`);
+                } finally {
+                    btn.disabled = false;
+                }
+                refreshStatus();
+                return;
             }
-            refreshStatus();
+
+            if (action === 'see-triggers') {
+                const entry = btn.dataset.entryfull || btn.dataset.entry || 'entry';
+                const exit = btn.dataset.exitfull || btn.dataset.exit || 'exit';
+                const symbol = btn.dataset.symbol || '';
+                const side = btn.dataset.side || '';
+                showTriggersDialog({ entry, exit, symbol, side });
+                return;
+            }
         });
     }
 
@@ -975,6 +1043,22 @@
         if (!response.ok) return;
         const data = await response.json();
         updateDashboard(data);
+    }
+
+    function showTriggersDialog({ entry, exit, symbol, side }) {
+        const dialog = document.getElementById('triggersDialog');
+        if (!dialog) return;
+        dialog.querySelector('[data-field="dlg-symbol"]').textContent = (symbol || '').toString().toUpperCase();
+        dialog.querySelector('[data-field="dlg-side"]').textContent = (side || '').toString().toUpperCase();
+        dialog.querySelector('[data-field="dlg-entry"]').textContent = entry || 'entry';
+        dialog.querySelector('[data-field="dlg-exit"]').textContent = exit || 'exit';
+        dialog.classList.add('open');
+    }
+
+    function hideTriggersDialog() {
+        const dialog = document.getElementById('triggersDialog');
+        if (!dialog) return;
+        dialog.classList.remove('open');
     }
 
     // Attach event listeners only if the elements exist (prevent errors when DOM differs)
@@ -1255,3 +1339,5 @@
 </script>
 </body>
 </html>
+
+

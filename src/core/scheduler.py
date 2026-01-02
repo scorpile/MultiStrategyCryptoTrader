@@ -1222,6 +1222,14 @@ class Scheduler:
                         "timestamp_utc": now.isoformat() + "Z",
                     }
                 )
+                if "position_side" not in order_metadata:
+                    try:
+                        positions_now = engine.get_open_positions()
+                        pos_now = next((p for p in positions_now if p.get("symbol") == self.symbol), None)
+                        pos_qty = float((pos_now or {}).get("quantity", 0.0) or 0.0)
+                    except Exception:
+                        pos_qty = 0.0
+                    order_metadata["position_side"] = "short" if pos_qty < 0 else "long"
 
                 # Enforce max_position_usdt against the *total* open exposure (not per-order),
                 # to avoid pyramiding beyond the configured cap.
@@ -1319,46 +1327,48 @@ class Scheduler:
                     self._record_decision_event(decision, now=now, executed=False, blocked_reason="no_position")
                     continue
 
-            if sell_qty > 0:
-                order_meta = dict(metadata)
-                if "trigger" not in order_meta:
-                    try:
-                        first_reason = (decision.get("reasons") or [None])[0]
-                    except Exception:
-                        first_reason = None
-                    if first_reason:
-                        order_meta["trigger"] = str(first_reason)
-                if "reason" not in order_meta:
-                    try:
-                        first_reason = (decision.get("reasons") or [None])[0]
-                    except Exception:
-                        first_reason = None
-                    if first_reason:
-                        order_meta["reason"] = str(first_reason)
-                order = SimulatedOrder(
-                    symbol=self.symbol,
-                    side="SELL",
-                    quantity=float(sell_qty),
-                    price=float(price),
-                    metadata=order_meta,
-                )
-                try:
-                    record = engine.submit_order(order)
-                    self._record_decision_event(decision, now=now, executed=True, trade_record=record)
-                    if engine is self.paper_trading_engine:
-                        self._maybe_auto_tune(now=now, last_trade_record=record)
-                except OrderRejected as e:
-                    logging.info("SELL rejected: %s", str(e))
-                    self._record_decision_event(
-                        decision,
-                        now=now,
-                        executed=False,
-                        blocked_reason=str(e.reason or "rejected"),
-                        extra={"rejection": e.details or {}},
+                if sell_qty > 0:
+                    order_meta = dict(metadata)
+                    if "trigger" not in order_meta:
+                        try:
+                            first_reason = (decision.get("reasons") or [None])[0]
+                        except Exception:
+                            first_reason = None
+                        if first_reason:
+                            order_meta["trigger"] = str(first_reason)
+                    if "reason" not in order_meta:
+                        try:
+                            first_reason = (decision.get("reasons") or [None])[0]
+                        except Exception:
+                            first_reason = None
+                        if first_reason:
+                            order_meta["reason"] = str(first_reason)
+                    if "position_side" not in order_meta:
+                        order_meta["position_side"] = "short" if short_entry else "long"
+                    order = SimulatedOrder(
+                        symbol=self.symbol,
+                        side="SELL",
+                        quantity=float(sell_qty),
+                        price=float(price),
+                        metadata=order_meta,
                     )
-                except Exception:
-                    logging.exception("Failed to execute SELL order.")
-                    self._record_decision_event(decision, now=now, executed=False, blocked_reason="execution_error", extra={"error": "sell_failed"})
+                    try:
+                        record = engine.submit_order(order)
+                        self._record_decision_event(decision, now=now, executed=True, trade_record=record)
+                        if engine is self.paper_trading_engine:
+                            self._maybe_auto_tune(now=now, last_trade_record=record)
+                    except OrderRejected as e:
+                        logging.info("SELL rejected: %s", str(e))
+                        self._record_decision_event(
+                            decision,
+                            now=now,
+                            executed=False,
+                            blocked_reason=str(e.reason or "rejected"),
+                            extra={"rejection": e.details or {}},
+                        )
+                    except Exception:
+                        logging.exception("Failed to execute SELL order.")
+                        self._record_decision_event(decision, now=now, executed=False, blocked_reason="execution_error", extra={"error": "sell_failed"})
 
     @staticmethod
     def _estimate_equity_usdt(portfolio: Dict[str, Any], *, current_price: float) -> float:

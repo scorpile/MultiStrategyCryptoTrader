@@ -186,7 +186,13 @@ class PaperTradingEngine:
         record["trade_pnl"] = trade_pnl
         record["cumulative_pnl"] = self.realized_pnl
         record["quantity"] = float(fill_qty)
-        record["position_side"] = "long" if str(record.get("side", "")).upper() == "BUY" else "short"
+        side = str(record.get("side", "")).upper()
+        meta_side = None
+        try:
+            meta_side = (metadata or {}).get("position_side")
+        except Exception:
+            meta_side = None
+        record["position_side"] = str(meta_side or ("long" if side == "BUY" else "short")).lower()
         record["metadata"] = {
             **(metadata or {}),
             "execution": exec_meta,
